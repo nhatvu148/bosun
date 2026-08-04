@@ -45,23 +45,63 @@ For a question about MORE THAN ONE container (\"how is everything\", \"anything 
 call diagnose_container or container_stats ONCE with ids=[\"*\"] rather than looping over
 containers. Fleet questions are one call, not N.";
 
+/// Appended to the handshake instructions when running read-only.
+const READ_ONLY_NOTE: &str = "\
+BOSUN IS RUNNING READ-ONLY. Only tools with no side effects are exposed. There is no
+way to start, stop, restart, remove, exec into, pull for, or compose anything through
+this server — those tools are absent from the tool list, not merely refused. If the user
+asks for an action, say plainly that this Bosun instance cannot perform it and suggest
+they run the command themselves; do not look for a workaround.";
+
 /// The MCP server. Cheap to clone — the engine client is shared.
 #[derive(Clone)]
 pub struct BosunServer {
     engine: Arc<EngineClient>,
+    read_only: bool,
     tool_router: ToolRouter<Self>,
 }
 
 impl BosunServer {
-    pub fn new(engine: EngineClient) -> Self {
+    /// Build the server, optionally restricted to tools with no side effects.
+    ///
+    /// Read-only mode *removes* the write tools from the router rather than
+    /// making them refuse. An agent cannot misuse a tool it was never told
+    /// exists, so this is a stronger guarantee than any runtime check — and it
+    /// costs nothing to enforce, because the enforcement is the absence of the
+    /// code path. It also shrinks the always-on tool schemas, which is a happy
+    /// alignment with the rest of the design rather than a trade-off.
+    pub fn with_mode(engine: EngineClient, read_only: bool) -> Self {
+        let mut tool_router = Self::info_router()
+            + Self::read_router()
+            + Self::actions_router()
+            + Self::diagnose_router()
+            + Self::compose_router();
+
+        if read_only {
+            // Drive the filter off the same classification the safety tests
+            // enforce, so a new tool cannot appear in read-only mode by
+            // default — an unclassified tool is removed, not kept.
+            let removed: Vec<String> = tool_router
+                .list_all()
+                .iter()
+                .filter(|t| !crate::safety::risk_of(&t.name).is_some_and(|r| r.allowed_read_only()))
+                .map(|t| t.name.to_string())
+                .collect();
+
+            for name in &removed {
+                tool_router.remove_route(name.as_str());
+            }
+            tracing::warn!(
+                removed = removed.len(),
+                tools = %removed.join(", "),
+                "READ-ONLY MODE: write tools are not exposed"
+            );
+        }
+
         Self {
             engine: Arc::new(engine),
-            // Each module contributes its own router; they merge into one surface.
-            tool_router: Self::info_router()
-                + Self::read_router()
-                + Self::actions_router()
-                + Self::diagnose_router()
-                + Self::compose_router(),
+            read_only,
+            tool_router,
         }
     }
 
@@ -154,8 +194,14 @@ impl BosunServer {
             "running_count": running,
             "engine_error": count_error,
             "destructive_tools": destructive,
-            "approval_mode": approval_mode,
-            "approval_note": approval_note,
+            "read_only": self.read_only,
+            "approval_mode": if self.read_only { "read_only" } else { approval_mode },
+            "approval_note": if self.read_only {
+                "Bosun is running READ-ONLY. Every write tool is absent from the tool list, \
+                 not merely refused — there is nothing to authorize."
+            } else {
+                approval_note
+            },
         });
 
         bounded_json(&payload, "bosun_info", "Unexpectedly large — report this.")
@@ -165,6 +211,15 @@ impl BosunServer {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for BosunServer {
     fn get_info(&self) -> ServerInfo {
+        // The handshake must say which mode is live, or an agent will keep
+        // proposing actions whose tools are not there and read the absence as
+        // a bug rather than a policy.
+        let instructions = if self.read_only {
+            format!("{INSTRUCTIONS}\n\n{READ_ONLY_NOTE}")
+        } else {
+            INSTRUCTIONS.to_string()
+        };
+
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
@@ -176,7 +231,7 @@ impl ServerHandler for BosunServer {
             Implementation::new("bosun", env!("CARGO_PKG_VERSION"))
                 .with_title("Bosun — Docker MCP server"),
         )
-        .with_instructions(INSTRUCTIONS)
+        .with_instructions(instructions)
     }
 
     /// Concrete resources the agent can pull without spending a tool call.
@@ -252,11 +307,32 @@ impl ServerHandler for BosunServer {
 /// building a `BosunServer` requires a connection, but the router does not.
 #[cfg(test)]
 pub(crate) fn all_tools() -> Vec<rmcp::model::Tool> {
-    let router: ToolRouter<BosunServer> = BosunServer::info_router()
+    tool_surface(false)
+}
+
+/// The tool surface for a given mode, assembled exactly as `with_mode` does.
+///
+/// Split out so tests can inspect it without a live daemon — building a
+/// `BosunServer` needs a connection, the router does not.
+#[cfg(test)]
+pub(crate) fn tool_surface(read_only: bool) -> Vec<rmcp::model::Tool> {
+    let mut router: ToolRouter<BosunServer> = BosunServer::info_router()
         + BosunServer::read_router()
         + BosunServer::actions_router()
         + BosunServer::diagnose_router()
         + BosunServer::compose_router();
+
+    if read_only {
+        let removed: Vec<String> = router
+            .list_all()
+            .iter()
+            .filter(|t| !crate::safety::risk_of(&t.name).is_some_and(|r| r.allowed_read_only()))
+            .map(|t| t.name.to_string())
+            .collect();
+        for name in &removed {
+            router.remove_route(name.as_str());
+        }
+    }
     router.list_all()
 }
 
@@ -465,5 +541,110 @@ mod tests {
             description.contains("raw=true"),
             "container_logs must name its escape hatch"
         );
+    }
+}
+
+#[cfg(test)]
+mod read_only_tests {
+    use super::*;
+    use crate::safety::{Risk, risk_of};
+
+    /// Read-only must expose *only* side-effect-free tools. Not "only
+    /// non-destructive" — `container_stop` destroys nothing and is still a
+    /// change to someone's production host.
+    #[test]
+    fn read_only_exposes_no_tool_that_changes_anything() {
+        let offenders: Vec<String> = tool_surface(true)
+            .iter()
+            .filter(|t| risk_of(&t.name) != Some(Risk::Read))
+            .map(|t| t.name.to_string())
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "read-only mode exposed tools with side effects: {offenders:?}"
+        );
+    }
+
+    /// Every write tool must actually disappear — the guarantee is absence, not
+    /// refusal, because an agent cannot misuse a tool it was never told exists.
+    #[test]
+    fn every_write_tool_is_absent_in_read_only() {
+        let names: Vec<String> = tool_surface(true)
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+
+        for tool in [
+            "container_start",
+            "container_stop",
+            "container_restart",
+            "container_rm",
+            "container_exec",
+            "pull_image",
+            "compose_up",
+            "compose_down",
+        ] {
+            assert!(
+                !names.contains(&tool.to_string()),
+                "{tool} is still exposed in read-only mode"
+            );
+        }
+    }
+
+    /// The reads must all survive, or read-only is useless rather than safe.
+    #[test]
+    fn read_only_keeps_the_whole_diagnostic_surface() {
+        let names: Vec<String> = tool_surface(true)
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+
+        for tool in [
+            "bosun_info",
+            "list_containers",
+            "inspect_container",
+            "container_logs",
+            "container_stats",
+            "list_images",
+            "compose_ps",
+            "diagnose_container",
+            "explain_exit_code",
+            "why_compose_failing",
+        ] {
+            assert!(
+                names.contains(&tool.to_string()),
+                "{tool} was wrongly removed"
+            );
+        }
+    }
+
+    /// An unclassified tool must fail *closed* in read-only mode. The filter
+    /// keeps only tools known to be reads, so a new tool nobody classified is
+    /// removed rather than silently exposed.
+    #[test]
+    fn an_unclassified_tool_would_be_excluded_not_exposed() {
+        assert_eq!(risk_of("some_future_tool"), None);
+        assert!(
+            !risk_of("some_future_tool").is_some_and(|r| r.allowed_read_only()),
+            "an unclassified tool must not pass the read-only filter"
+        );
+    }
+
+    #[test]
+    fn read_only_is_a_strict_subset_of_the_full_surface() {
+        let full: Vec<String> = tool_surface(false)
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let ro: Vec<String> = tool_surface(true)
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+
+        assert!(ro.len() < full.len(), "read-only should expose fewer tools");
+        for name in &ro {
+            assert!(full.contains(name), "{name} appears only in read-only mode");
+        }
     }
 }

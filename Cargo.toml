@@ -10,11 +10,18 @@ repository = "https://github.com/nhatvu148/bosun"
 keywords = ["mcp", "docker", "containers", "agent", "llm"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = []
+# Remote daemons over ssh:// and https://. Off by default: it pulls ~34 crates
+# (rustls, ring, openssh) and ~1.7 MB that a local-socket user never touches.
+# Local paths, unix:// and plain tcp:// work without it.
+remote = ["bollard/ssh", "bollard/ssl"]
+
 [dependencies]
 anyhow = "1.0.104"
-bollard = { version = "0.21.0", features = ["ssh", "ssl"] }
+bollard = { version = "0.21.0" }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
-clap = { version = "4.6.5", features = ["derive"] }
+clap = { version = "4.6.5", features = ["derive", "env"] }
 futures-util = "0.3.33"
 rmcp = { version = "3.1.0", features = ["server", "transport-io", "macros", "schemars", "elicitation"] }
 schemars = "1.2.2"

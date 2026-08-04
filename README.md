@@ -5,7 +5,8 @@ An **engine-agnostic, agent-ergonomic Docker MCP server** in Rust.
 Bosun exposes container lifecycle, logs, stats and Compose as MCP tools — but every
 read is **bounded and summarizing by default**, every destructive write is **gated**,
 and it talks the plain Docker Engine socket, so it drives Docker, OrbStack, Podman or
-Colima interchangeably.
+Colima through the same code path — see [what has actually been
+tested](#what-has-actually-been-tested).
 
 It is not a monitoring daemon. It is a control surface for a human-in-the-loop agent.
 
@@ -37,8 +38,11 @@ context window unread.* If it isn't, the tool is wrong.
 
 ```bash
 cargo install --path .
-# or, once published:
-cargo install bosun
+
+# Remote daemons over ssh:// or https:// need one extra feature.
+# Off by default: it costs ~34 crates and ~1.7 MB a local-socket user
+# never touches.
+cargo install --path . --features remote
 ```
 
 This puts `bosun` in `~/.cargo/bin`. If `bosun: command not found`, that directory
@@ -202,6 +206,35 @@ fails if any tool lacks a `safety::risk_of` entry, or if a destructive one doesn
 declare `destructive_hint` and expose both gates in its schema. A new destructive tool
 cannot ship un-gated by accident.
 
+#### Read-only mode — when the gate isn't enough
+
+For a host you are not willing to have an agent change, don't rely on a gate at all:
+
+```bash
+bosun --read-only            # or BOSUN_READ_ONLY=1
+```
+
+Every write tool — start, stop, restart, pull, compose up/down, rm, exec — is **removed
+from the tool list**, not merely refused. An agent cannot misuse a tool it was never told
+exists, which is a stronger guarantee than any runtime check because the enforcement is
+the absence of the code path. Calling one fails at the protocol level with
+`tool not found`.
+
+| | Tools | Resident tokens |
+|---|---:|---:|
+| default | 18 | 4,476 |
+| `--read-only` | 10 | 2,574 |
+
+The whole diagnostic surface survives — `diagnose_container`, `container_logs`,
+`why_compose_failing` and the rest — so read-only Bosun is still the tool you want for
+*troubleshooting* production. It just cannot act on it. The handshake tells the agent it
+is read-only, so it says "this instance cannot do that" rather than hunting for a
+workaround, and `bosun_info` reports the mode.
+
+The filter is driven by the same classification the safety tests enforce, and an
+**unclassified tool is removed, not kept** — a new tool cannot leak into read-only mode
+by someone forgetting to think about it.
+
 #### What the gate does and does not guarantee
 
 Be precise about this, because it is easy to over-read.
@@ -340,6 +373,22 @@ restarted nine times over three months is not.
 
 ## Engine discovery
 
+### What has actually been tested
+
+| Engine | Status |
+|---|---|
+| **OrbStack** | verified — primary development target |
+| **Podman 6.0.2** (macOS, `podman machine`) | verified — discovery, `podman` detection, `list_containers`, `diagnose_container` |
+| Docker Desktop | not tested; uses the same `/var/run/docker.sock` path |
+| Colima | not tested; path is in the search order but unexercised |
+
+Being precise because the earlier version of this README claimed "drives Docker, OrbStack,
+Podman or Colima interchangeably" on the strength of unit tests alone — and on macOS that
+was **false**. `XDG_RUNTIME_DIR` is unset there, so the only Podman candidate never fired,
+and the real socket lives at `$TMPDIR/podman/podman-machine-default-api.sock` — neither
+the path in the code nor the one the docs suggest.
+
+
 Resolved in order, first hit wins:
 
 1. `--socket` flag
@@ -347,7 +396,8 @@ Resolved in order, first hit wins:
 3. `~/.orbstack/run/docker.sock`
 4. `~/.colima/default/docker.sock`
 5. `/var/run/docker.sock`
-6. `$XDG_RUNTIME_DIR/podman/podman.sock`
+6. `$XDG_RUNTIME_DIR/podman/podman.sock` — Podman rootless, **Linux only**
+7. `$TMPDIR/podman/*-api.sock` — `podman machine`, macOS/Windows
 
 OrbStack and Colima come before `/var/run/docker.sock` because on macOS that path is
 usually a symlink into one of them — matching the real path first yields an honest
@@ -360,7 +410,9 @@ reports that explicitly rather than failing cryptically.
 ### Remote hosts
 
 `--socket` and `DOCKER_HOST` accept `ssh://user@host`, `tcp://host:2375` and
-`https://host:2376` as well as local paths:
+`https://host:2376` as well as local paths. **`ssh://` and `https://` require
+`--features remote`**; a build without it says so and names the fix rather than
+reporting an unsupported scheme.
 
 ```bash
 bosun --check --socket ssh://deploy@prod.example.com

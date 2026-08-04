@@ -52,6 +52,7 @@ pub enum Source {
     ColimaSocket,
     DefaultSocket,
     PodmanSocket,
+    PodmanMachineSocket,
 }
 
 impl Source {
@@ -63,6 +64,7 @@ impl Source {
             Source::ColimaSocket => "~/.colima/default/docker.sock",
             Source::DefaultSocket => "/var/run/docker.sock",
             Source::PodmanSocket => "$XDG_RUNTIME_DIR/podman/podman.sock",
+            Source::PodmanMachineSocket => "$TMPDIR/podman/*-api.sock (podman machine)",
         }
     }
 }
@@ -117,6 +119,7 @@ fn candidates() -> Vec<Endpoint> {
     });
 
     // Podman's rootless socket is Docker-API-compatible, so it needs no adapter.
+    // This is the *Linux* location; macOS puts it somewhere else entirely.
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR")
         && !runtime.trim().is_empty()
     {
@@ -127,7 +130,57 @@ fn candidates() -> Vec<Endpoint> {
         });
     }
 
+    out.extend(podman_machine_sockets());
+
     out
+}
+
+/// Podman sockets published by `podman machine` on macOS and Windows.
+///
+/// Verified against podman 6.0.2 on macOS, which puts its API socket at
+/// `$TMPDIR/podman/podman-machine-default-api.sock`. That is neither the Linux
+/// rootless path above nor the `~/.local/share/containers/...` path the docs
+/// suggest — both of which this code guessed at before anyone ran it against a
+/// real Podman. The README claimed "engine-agnostic" on the strength of unit
+/// tests alone, and on macOS the claim was simply false: `XDG_RUNTIME_DIR` is
+/// unset there, so the only Podman candidate never fired.
+///
+/// The filename embeds the machine name, so this scans rather than guessing a
+/// fixed path — a user with a non-default machine is still found.
+fn podman_machine_sockets() -> Vec<Endpoint> {
+    let Some(tmpdir) = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return Vec::new();
+    };
+
+    let Ok(entries) = std::fs::read_dir(tmpdir.join("podman")) else {
+        return Vec::new();
+    };
+
+    let mut found: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with("-api.sock"))
+        })
+        .map(path_str)
+        .collect();
+
+    // Stable order, so which machine wins doesn't change between runs.
+    found.sort();
+
+    found
+        .into_iter()
+        .map(|address| Endpoint {
+            address,
+            source: Source::PodmanMachineSocket,
+            engine_hint: Engine::Podman,
+        })
+        .collect()
 }
 
 /// Resolve the endpoint to bind to, honouring an explicit override first.
@@ -240,6 +293,63 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scan is what makes Podman findable on macOS. Driven by an injected
+    /// directory rather than the real $TMPDIR so it is deterministic in CI,
+    /// where no Podman exists.
+    fn scan(dir: &std::path::Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut found: Vec<String> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with("-api.sock"))
+            })
+            .map(path_str)
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn podman_machine_scan_matches_the_real_socket_name() {
+        // The exact filename observed from podman 6.0.2 on macOS. Guessing this
+        // is what produced two wrong paths before anyone ran it for real.
+        let dir = std::env::temp_dir().join(format!("bosun-scan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "podman-machine-default-api.sock",
+            "podman-machine-work-api.sock",
+            "not-a-socket.txt",
+            "podman.sock",
+        ] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+
+        let found = scan(&dir);
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(
+            found.len(),
+            2,
+            "should match only the *-api.sock files: {found:?}"
+        );
+        assert!(found[0].ends_with("podman-machine-default-api.sock"));
+        assert!(found[1].ends_with("podman-machine-work-api.sock"));
+        // Sorted, so which machine wins cannot change between runs.
+        assert!(found[0] < found[1]);
+    }
+
+    #[test]
+    fn a_missing_podman_directory_is_not_an_error() {
+        // The overwhelmingly common case: no Podman installed at all.
+        let missing = std::env::temp_dir().join("bosun-definitely-not-here-xyz");
+        assert!(scan(&missing).is_empty());
+    }
 
     #[test]
     fn cli_override_wins_and_is_taken_verbatim() {

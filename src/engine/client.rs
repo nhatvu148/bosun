@@ -37,6 +37,16 @@ impl EngineClient {
         // which daemon you are driving is the single most dangerous thing this
         // server can do, since every destructive tool acts on that answer.
         let docker = if is_remote(&endpoint.address) {
+            // Without the `remote` feature bollard reports only "URI scheme is
+            // not supported", which reads like the scheme is wrong rather than
+            // like this build simply omits it. Name the actual fix.
+            #[cfg(not(feature = "remote"))]
+            if needs_remote_feature(&endpoint.address) {
+                return Err(ConnectError::RemoteFeatureMissing {
+                    address: endpoint.address.clone(),
+                });
+            }
+
             Docker::connect_with_host(&endpoint.address).map_err(|source| {
                 ConnectError::Connect {
                     address: endpoint.address.clone(),
@@ -134,6 +144,12 @@ impl EngineClient {
     }
 }
 
+/// Schemes that only exist when the `remote` feature is compiled in.
+#[cfg(not(feature = "remote"))]
+fn needs_remote_feature(address: &str) -> bool {
+    address.starts_with("ssh://") || address.starts_with("https://")
+}
+
 /// Is this address something other than a local unix socket path?
 ///
 /// `tcp://`, `http://`, `https://`, `ssh://` and `npipe://` all need bollard's
@@ -153,6 +169,23 @@ pub enum ConnectError {
         #[source]
         source: bollard::errors::Error,
     },
+
+    /// Only reachable in a build without `remote`; with the feature on, the
+    /// scheme works and the variant would be dead code.
+    #[cfg(not(feature = "remote"))]
+    // Names the feature rather than a package, deliberately. An earlier version
+    // said `cargo install bosun-mcp`, a crate that does not exist yet, and the
+    // obvious correction — `cargo install bosun` — is worse: that name is a
+    // squatted v0.0.0-reserved placeholder on crates.io, so it would install a
+    // stranger's empty crate instead of failing. Instructions that name a
+    // feature stay correct however the reader obtained the binary.
+    #[error(
+        "'{address}' needs the `remote` feature, which this build does not have.\n\
+         Rebuild with it enabled, e.g.  cargo install --path . --features remote\n\
+         It is off by default because ssh/TLS support costs ~34 crates and ~1.7 MB \
+         that a local-socket user never touches. Plain tcp:// works without it."
+    )]
+    RemoteFeatureMissing { address: String },
 
     #[error(
         "connected to '{address}' but it never answered /version: {source}\n\

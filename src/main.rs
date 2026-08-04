@@ -43,6 +43,40 @@ struct Cli {
     /// Resolve and print the engine Bosun would bind to, then exit.
     #[arg(long)]
     check: bool,
+
+    /// Expose ONLY tools with no side effects.
+    ///
+    /// Every write tool — start/stop/restart, pull, compose up/down, rm and
+    /// exec — is removed from the tool list entirely, not merely refused. Use
+    /// this whenever Bosun points at a host you are not willing to have an
+    /// agent change, which is most of the reasons to point it at a remote one.
+    #[arg(
+        long,
+        env = "BOSUN_READ_ONLY",
+        value_parser = parse_bool,
+        default_value_t = false,
+        num_args = 0..=1,
+        default_missing_value = "true",
+    )]
+    read_only: bool,
+}
+
+/// Parse a boolean the way people actually write one.
+///
+/// clap's default bool parser accepts only "true"/"false", so
+/// `BOSUN_READ_ONLY=1` — the form nearly everyone reaches for — would fail with
+/// "invalid value '1'". For a safety switch that is the worst possible failure:
+/// the user believes they enabled read-only, and instead the process refuses to
+/// start at all. Accepting the usual spellings avoids a footgun on the one flag
+/// where being wrong matters most.
+fn parse_bool(raw: &str) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Ok(true),
+        "0" | "false" | "no" | "n" | "off" | "" => Ok(false),
+        other => Err(format!(
+            "expected a boolean (1/true/yes/on or 0/false/no/off), got '{other}'"
+        )),
+    }
 }
 
 #[tokio::main]
@@ -78,12 +112,22 @@ async fn main() -> anyhow::Result<()> {
         println!("resolved from:  {}", engine.endpoint().source.as_str());
         println!("server version: {}", engine.server_version());
         println!("api version:    {}", engine.api_version());
+        println!(
+            "mode:           {}",
+            if cli.read_only {
+                "read-only (write tools not exposed)"
+            } else {
+                "read-write"
+            }
+        );
         return Ok(());
     }
 
     tracing::info!("bosun {} starting on stdio", env!("CARGO_PKG_VERSION"));
 
-    let service = BosunServer::new(engine).serve(stdio()).await?;
+    let service = BosunServer::with_mode(engine, cli.read_only)
+        .serve(stdio())
+        .await?;
     service.waiting().await?;
 
     tracing::info!("bosun shutting down");

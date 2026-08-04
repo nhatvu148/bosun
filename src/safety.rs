@@ -14,22 +14,36 @@
 use serde::Serialize;
 
 /// Risk class of an operation.
+///
+/// Three levels, not two. An earlier version collapsed reads and reversible
+/// writes into one `Safe` variant, which made `--read-only` inexpressible:
+/// `container_stop` is safe in the sense that nothing is lost, and absolutely
+/// not safe in the sense a production reader means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Risk {
-    /// Reversible or read-only: start, stop, restart, every read tool.
-    Safe,
-    /// Irreversible data loss is possible: rm, prune, compose down -v.
+    /// No side effects at all. The only class `--read-only` exposes.
+    Read,
+    /// Changes state, but nothing is destroyed: start, stop, restart, pull.
+    Write,
+    /// Irreversible loss is possible, or arbitrary code runs: rm, down -v, exec.
     Destructive,
+}
+
+impl Risk {
+    /// Is this tool exposed when Bosun runs read-only?
+    pub fn allowed_read_only(self) -> bool {
+        matches!(self, Risk::Read)
+    }
 }
 
 /// The §6 classification of every tool Bosun exposes.
 ///
 /// This exists as data rather than as a comment so it can be *checked*: the test
-/// at the bottom of this module walks the live tool router and fails if a tool
-/// is added without being classified here. A new destructive tool therefore
-/// cannot ship un-gated by accident, which is the failure mode §6 exists to
-/// prevent.
+/// in `server.rs` walks the live tool router and fails if a tool is added
+/// without being classified here. A new destructive tool therefore cannot ship
+/// un-gated by accident, which is the failure mode §6 exists to prevent — and
+/// now also cannot silently leak into read-only mode.
 pub fn risk_of(tool: &str) -> Option<Risk> {
     let risk = match tool {
         // Reads — bounded, no side effects.
@@ -42,11 +56,13 @@ pub fn risk_of(tool: &str) -> Option<Risk> {
         | "compose_ps"
         | "diagnose_container"
         | "explain_exit_code"
-        | "why_compose_failing" => Risk::Safe,
+        | "why_compose_failing" => Risk::Read,
 
-        // Writes that are reversible: the container can be started again.
+        // Reversible writes: the container can be started again, the image
+        // re-pulled. Harmless on a laptop, still a change on someone's
+        // production host — which is why read-only excludes them.
         "container_start" | "container_stop" | "container_restart" | "pull_image"
-        | "compose_up" => Risk::Safe,
+        | "compose_up" => Risk::Write,
 
         // Writes that can destroy data, plus arbitrary code execution.
         // These must route through `gate`.
@@ -345,7 +361,12 @@ mod tests {
         for tool in ["container_rm", "compose_down", "container_exec"] {
             assert_eq!(risk_of(tool), Some(Risk::Destructive), "{tool}");
         }
-        assert_eq!(risk_of("list_containers"), Some(Risk::Safe));
+        assert_eq!(risk_of("list_containers"), Some(Risk::Read));
+        // Reversible, but still a change — must not be classed as a read.
+        assert_eq!(risk_of("container_stop"), Some(Risk::Write));
+        assert!(!Risk::Write.allowed_read_only());
+        assert!(!Risk::Destructive.allowed_read_only());
+        assert!(Risk::Read.allowed_read_only());
         // An unregistered tool is explicitly unclassified, not silently safe.
         assert_eq!(risk_of("some_future_tool"), None);
     }
