@@ -36,8 +36,9 @@ struct Cli {
     socket: Option<String>,
 
     /// Log verbosity: error, warn, info, debug, trace. Logs go to stderr.
-    #[arg(long, default_value = "info", value_name = "LEVEL")]
-    log_level: String,
+    /// Defaults to 'info' when serving, 'warn' with --check.
+    #[arg(long, value_name = "LEVEL")]
+    log_level: Option<String>,
 
     /// Resolve and print the engine Bosun would bind to, then exit.
     #[arg(long)]
@@ -48,11 +49,20 @@ struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // `--check` is a human-facing one-shot, so the startup chatter that is useful
+    // when serving is just noise around five lines of answer. An explicit
+    // --log-level or BOSUN_LOG still wins — asking for logs should always get
+    // you logs, whichever subcommand you asked on.
+    let level = cli
+        .log_level
+        .clone()
+        .unwrap_or_else(|| if cli.check { "warn" } else { "info" }.to_string());
+
     // stdout is the MCP JSON-RPC channel. Every byte of logging goes to stderr,
     // or the protocol is corrupted. This is the single most important line here.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_env("BOSUN_LOG").unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
+            EnvFilter::try_from_env("BOSUN_LOG").unwrap_or_else(|_| EnvFilter::new(&level)),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)

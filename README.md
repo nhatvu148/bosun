@@ -41,6 +41,10 @@ cargo install --path .
 cargo install bosun
 ```
 
+This puts `bosun` in `~/.cargo/bin`. If `bosun: command not found`, that directory
+isn't on your `PATH` — add it, or run the binary directly from
+`./target/release/bosun` after `cargo build --release`.
+
 Verify it can find your engine before wiring it into anything:
 
 ```bash
