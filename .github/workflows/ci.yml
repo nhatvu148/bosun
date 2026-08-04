@@ -163,7 +163,7 @@ jobs:
           sleep 15
 
       - name: Run benchmark
-        run: python3 benches/run.py | tee "$GITHUB_STEP_SUMMARY"
+        run: python3 benches/run.py --sync-readme | tee "$GITHUB_STEP_SUMMARY"
 
       - name: Stop fixture stack
         if: always()
