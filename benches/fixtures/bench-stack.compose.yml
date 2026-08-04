@@ -1,0 +1,105 @@
+# Reproducible fixture stack for the token benchmark.
+#
+# The numbers in docs/BENCHMARK.md come from THIS stack, not from whatever
+# happens to be running on the author's machine. That is the whole point: a
+# benchmark nobody else can reproduce is a claim, not a measurement.
+#
+#   docker compose -p bosun-bench -f benches/fixtures/bench-stack.compose.yml up -d
+#   ./benches/run.sh
+#   docker compose -p bosun-bench -f benches/fixtures/bench-stack.compose.yml down
+#
+# The mix is deliberate — it covers the cases where Bosun wins big, wins a
+# little, and loses:
+#
+#   chatty        repetitive logs        -> clustering at its best
+#   varied        low-repetition logs    -> clustering at its worst
+#   crashloop     restarts + exit 1      -> diagnosis signal
+#   quiet-1..3    almost no logs         -> where Bosun's JSON costs more
+#                                           than a `docker ps` table row
+
+services:
+  # ~600 lines that collapse to a handful of clusters. Differing ids and
+  # timings on every line, so this measures real normalization rather than
+  # exact-duplicate matching, which would be a rigged test.
+  chatty:
+    image: busybox:latest
+    container_name: bosun-bench-chatty
+    restart: "no"
+    command: >
+      sh -c "i=0;
+             while [ \$$i -lt 600 ]; do
+               i=\$$((i+1));
+               echo \"[INFO] req id=a1b2c3d4e\$$i from 10.0.0.\$$((i%255)) took \$${i}ms GET /v1/items\";
+               if [ \$$((i%20)) -eq 0 ]; then
+                 echo \"ERROR failed to connect to db-\$$i at 10.0.0.5:5432 after \$${i}ms\" >&2;
+               fi;
+             done;
+             sleep 3600"
+
+  # Low-repetition output: the lines must differ in *skeleton*, not just in
+  # their numbers. A first attempt at this emitted
+  # "stage-N completed phase M with checksum X", which normalizes to a single
+  # cluster and made the supposed worst case look like a 27x win. Real variety
+  # means different sentences, so this rotates through 20 distinct message
+  # shapes — roughly what a service emits during a complex startup.
+  varied:
+    image: busybox:latest
+    container_name: bosun-bench-varied
+    restart: "no"
+    command: >
+      sh -c "i=0;
+             while [ \$$i -lt 200 ]; do
+               i=\$$((i+1));
+               case \$$((i%20)) in
+                 0) echo \"loaded configuration from /etc/app/\$$i.conf\" ;;
+                 1) echo \"established pool connection to shard \$$i\" ;;
+                 2) echo \"cache warm: \$$i entries hydrated from disk\" ;;
+                 3) echo \"migration \$$i applied in \$${i}ms\" ;;
+                 4) echo \"listener bound on interface eth\$$i\" ;;
+                 5) echo \"feature flag rollout_\$$i evaluated to true\" ;;
+                 6) echo \"scheduler registered job cleanup-\$$i\" ;;
+                 7) echo \"tls certificate for host-\$$i expires in \$$i days\" ;;
+                 8) echo \"index rebuild for table orders_\$$i finished\" ;;
+                 9) echo \"replica \$$i caught up, lag 0\" ;;
+                10) echo \"WARN deprecated option legacy_mode_\$$i ignored\" ;;
+                11) echo \"metrics exporter scraped \$$i series\" ;;
+                12) echo \"template engine compiled \$$i views\" ;;
+                13) echo \"locale bundle \$$i registered\" ;;
+                14) echo \"background worker \$$i entered idle state\" ;;
+                15) echo \"quota for tenant-\$$i set to \$$((i*10))\" ;;
+                16) echo \"webhook endpoint \$$i verified\" ;;
+                17) echo \"compaction reclaimed \$$i blocks\" ;;
+                18) echo \"session store pruned \$$i expired keys\" ;;
+                19) echo \"module audit-\$$i initialised\" ;;
+               esac;
+             done;
+             sleep 3600"
+
+  # Restarts a few times, exits non-zero: gives diagnose_container real signal.
+  crashloop:
+    image: busybox:latest
+    container_name: bosun-bench-crashloop
+    restart: on-failure:5
+    command: >
+      sh -c "echo 'ERROR cannot bind port 8080: address already in use' >&2;
+             echo 'ERROR startup aborted' >&2;
+             sleep 1;
+             exit 1"
+
+  quiet-1:
+    image: busybox:latest
+    container_name: bosun-bench-quiet-1
+    restart: "no"
+    command: sh -c "echo ready; sleep 3600"
+
+  quiet-2:
+    image: busybox:latest
+    container_name: bosun-bench-quiet-2
+    restart: "no"
+    command: sh -c "echo ready; sleep 3600"
+
+  quiet-3:
+    image: busybox:latest
+    container_name: bosun-bench-quiet-3
+    restart: "no"
+    command: sh -c "echo ready; sleep 3600"

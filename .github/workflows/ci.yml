@@ -135,3 +135,38 @@ jobs:
       # is how a manifest drifts into lying to `cargo install`.
       - name: Build on the declared MSRV
         run: cargo build --all-features
+
+  benchmark:
+    name: benchmark (manual)
+    # Manual only: it needs Docker, takes minutes, and its output is a document
+    # rather than a pass/fail. Gating PRs on it would slow every change for a
+    # number nobody reads on that PR. Run it before a release, or whenever the
+    # bounding logic changes, and commit the regenerated docs/BENCHMARK.md.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+
+      - name: Install tokenizer
+        # Without this the harness falls back to a bytes/4 estimate, which
+        # flatters whichever side has more JSON — Bosun's. Published numbers
+        # must come from a real tokenizer.
+        run: pip install tiktoken
+
+      - name: Start fixture stack
+        run: |
+          docker compose -p bosun-bench \
+            -f benches/fixtures/bench-stack.compose.yml up -d
+          sleep 15
+
+      - name: Run benchmark
+        run: python3 benches/run.py | tee "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop fixture stack
+        if: always()
+        run: |
+          docker compose -p bosun-bench \
+            -f benches/fixtures/bench-stack.compose.yml down -v
