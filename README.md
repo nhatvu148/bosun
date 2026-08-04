@@ -300,8 +300,8 @@ smaller without making anything safer.
 So exec is here, and it earns its place by being the *stricter* path: argv-only (never a
 shell string, so nothing is interpreted by a shell Kagoni doesn't control), output capped
 at 8 000 chars per stream, a timeout that defaults to 30s and hard-caps at 300s, and
-`Destructive` classification so every call passes §6. HANDOFF §6 anticipated this —
-it listed "maybe `exec`" among the destructive tools from the start.
+`Destructive` classification so every call passes §6. The [original spec](docs/ORIGINAL-SPEC.md)
+anticipated this — it listed "maybe `exec`" among the destructive tools from the start.
 
 ---
 

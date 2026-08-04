@@ -1,4 +1,4 @@
-//! Engine-agnostic socket discovery and engine detection (HANDOFF §7).
+//! Engine-agnostic socket discovery and engine detection (docs/ORIGINAL-SPEC.md §7).
 //!
 //! Kagoni talks the plain Docker Engine API, so anything that speaks it —
 //! Docker Desktop, OrbStack, Colima, Podman — works through the same code path.
@@ -80,7 +80,7 @@ pub struct Endpoint {
     pub engine_hint: Engine,
 }
 
-/// Every place we know to look, in the order HANDOFF §7 specifies.
+/// Every place we know to look, in the order docs/ORIGINAL-SPEC.md §7 specifies.
 ///
 /// Ordering matters and is deliberate: an explicit `DOCKER_HOST` always wins so
 /// the user can point Kagoni anywhere, and the OrbStack/Colima paths come before
@@ -261,7 +261,7 @@ pub enum DiscoveryError {
     )]
     NoEndpoint { tried: Vec<String> },
 
-    /// Apple's `container` CLI does not expose a Docker Engine API (HANDOFF §7.6).
+    /// Apple's `container` CLI does not expose a Docker Engine API (docs/ORIGINAL-SPEC.md §7.6).
     /// We name it explicitly so the failure reads as "unsupported engine" rather
     /// than a cryptic connection error.
     #[error(

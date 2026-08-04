@@ -1,7 +1,7 @@
-//! Compose tools (HANDOFF §4, M4).
+//! Compose tools (docs/ORIGINAL-SPEC.md §4, M4).
 //!
 //! Compose is the one sanctioned exception to "never shell out to the docker CLI"
-//! (HANDOFF §11, confirmed): the Engine API has no Compose endpoints, Compose is a
+//! (docs/ORIGINAL-SPEC.md §11, confirmed): the Engine API has no Compose endpoints, Compose is a
 //! *client-side* spec, and reimplementing dependency ordering and healthcheck
 //! gating would be a large source of subtle divergence from what the user gets
 //! from their own terminal.

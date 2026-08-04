@@ -1,4 +1,4 @@
-//! Deterministic diagnostics (HANDOFF §4 "Diagnostic", M3).
+//! Deterministic diagnostics (docs/ORIGINAL-SPEC.md §4 "Diagnostic", M3).
 //!
 //! **No LLM call happens inside Kagoni.** The calling agent is the LLM; Kagoni's
 //! job is to be a fast, honest data source that hands it bounded ground truth.

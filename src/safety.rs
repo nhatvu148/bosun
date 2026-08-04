@@ -1,4 +1,4 @@
-//! Write-safety contract (HANDOFF §6).
+//! Write-safety contract (docs/ORIGINAL-SPEC.md §6).
 //!
 //! The premise: an over-eager agent must not be able to nuke a volume by
 //! reaching for the obvious tool. So destructiveness is a property of the

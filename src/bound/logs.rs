@@ -1,4 +1,4 @@
-//! Tail + cluster-dedup for container logs (HANDOFF §5).
+//! Tail + cluster-dedup for container logs (docs/ORIGINAL-SPEC.md §5).
 //!
 //! The problem this solves: a crash-looping container emits the same stacktrace
 //! five hundred times. Relaying that verbatim burns a context window to say one
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn identical_stacktraces_collapse_to_one_cluster() {
-        // The motivating case from HANDOFF §5.
+        // The motivating case from docs/ORIGINAL-SPEC.md §5.
         let lines: Vec<LogLine> = (0..500)
             .map(|i| line(&format!("ERROR connection refused to db after {i}ms")))
             .collect();
