@@ -51,6 +51,16 @@ const CRASH_LOOP_UPTIME_SECS: i64 = 60;
 /// reported as evidence, just not treated as a diagnosis.
 const ERROR_CLUSTER_THRESHOLD: usize = 3;
 
+/// How recently an error must have occurred to describe the container's *current*
+/// condition rather than its history.
+///
+/// A log window holds hours of history, so a container that failed at startup and
+/// has been fine since still shows those errors. Reporting it as degraded confuses
+/// "this broke once" with "this is broken" — and the second claim is the one a
+/// status field exists to make. Stale errors stay in `log_signals` and in the
+/// verdict's note, so nothing is hidden; they just stop driving the verdict.
+const RECENT_ERROR_WINDOW_SECS: i64 = 3_600;
+
 /// Overall health of the container, as Bosun reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -370,6 +380,36 @@ impl BosunServer {
     }
 }
 
+/// Whether a cluster's most recent occurrence is inside the recency window.
+///
+/// A cluster with no usable timestamp counts as current: unknown recency must
+/// not silently downgrade a real error into history.
+fn is_current(cluster: &Cluster, now: i64) -> bool {
+    let Some(last_seen) = cluster.last_seen.as_deref() else {
+        return true;
+    };
+    match chrono::DateTime::parse_from_rfc3339(last_seen) {
+        Ok(ts) => now.saturating_sub(ts.timestamp()) <= RECENT_ERROR_WINDOW_SECS,
+        Err(_) => true,
+    }
+}
+
+/// Does this cluster carry enough weight to drive a verdict on its own?
+fn is_significant(cluster: &Cluster) -> bool {
+    cluster.level >= Level::Fatal
+        || (cluster.level >= Level::Error && cluster.count >= ERROR_CLUSTER_THRESHOLD)
+}
+
+/// Render how long ago a cluster last fired, for the historical-errors note.
+fn ago(cluster: &Cluster, now: i64) -> String {
+    cluster
+        .last_seen
+        .as_deref()
+        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+        .map(|ts| crate::bound::human_age(ts.timestamp(), now))
+        .unwrap_or_else(|| "at an unknown time".into())
+}
+
 /// Seconds a container has been up, from `State.StartedAt`.
 ///
 /// `None` when the timestamp is absent, unparseable, or Docker's "never started"
@@ -519,7 +559,7 @@ fn diagnose_at(
         )
     } else if let Some(worst) = clusters
         .iter()
-        .find(|c| c.level >= Level::Fatal || (c.level >= Level::Error && c.count >= ERROR_CLUSTER_THRESHOLD))
+        .find(|c| is_significant(c) && is_current(c, now))
     {
         actions.push("Call container_logs(id, level='error') for the full picture".into());
         (
@@ -527,6 +567,24 @@ fn diagnose_at(
             Some(format!(
                 "Running, but emitting errors repeatedly: {} (seen {}x)",
                 worst.sample, worst.count
+            )),
+        )
+    } else if let Some(stale) = clusters.iter().find(|c| is_significant(c)) {
+        // Errors exist but stopped. That is history, not a current condition —
+        // reported so it can't be missed, but not treated as a live fault.
+        actions.push(format!(
+            "Errors stopped {}. Confirm they were fixed rather than merely untriggered — \
+             a code path nothing has exercised can still be broken",
+            ago(stale, now)
+        ));
+        actions.push("Call container_logs(id, level='error') to see the full history".into());
+        (
+            Verdict::Healthy,
+            Some(format!(
+                "Currently healthy. Logged errors earlier, most recently {}: {} (seen {}x).",
+                ago(stale, now),
+                stale.sample,
+                stale.count
             )),
         )
     } else if restart_count > 0 {
@@ -1034,6 +1092,58 @@ mod tests {
         assert!(d.likely_cause.is_none());
         // Still reported as evidence — suppressed from the verdict, not hidden.
         assert!(d.evidence.iter().any(|e| e.contains("autovacuum")));
+    }
+
+    /// Found reviewing a real session: a Postgres that failed at startup and had
+    /// been fine for 20 hours was still reported "degraded", because the log
+    /// window still held the errors. "This broke once" and "this is broken" are
+    /// different claims, and a status field exists to make the second one.
+    #[test]
+    fn errors_that_stopped_hours_ago_are_history_not_a_live_fault() {
+        const NOW: i64 = 1_800_000_000;
+        let mut cluster = error_cluster("ERROR relation \"ocr_usage\" does not exist", 13, Level::Error);
+        cluster.last_seen = Some(
+            chrono::DateTime::from_timestamp(NOW - 20 * 3600, 0)
+                .unwrap()
+                .to_rfc3339(),
+        );
+
+        let d = diagnose_at(&container(running(), 0), &[cluster], NOW);
+
+        assert_eq!(d.status, Verdict::Healthy);
+        // Reported, not hidden — the agent still needs to see it.
+        let cause = d.likely_cause.as_ref().unwrap();
+        assert!(cause.contains("Logged errors earlier"), "got: {cause}");
+        assert!(cause.contains("ocr_usage"), "got: {cause}");
+        assert!(
+            d.suggested_actions.iter().any(|a| a.contains("untriggered")),
+            "must warn that silence may mean the path was never exercised"
+        );
+    }
+
+    #[test]
+    fn the_same_errors_still_degrade_when_they_are_current() {
+        const NOW: i64 = 1_800_000_000;
+        let mut cluster = error_cluster("ERROR connection refused", 13, Level::Error);
+        cluster.last_seen = Some(
+            chrono::DateTime::from_timestamp(NOW - 120, 0)
+                .unwrap()
+                .to_rfc3339(),
+        );
+
+        let d = diagnose_at(&container(running(), 0), &[cluster], NOW);
+        assert_eq!(d.status, Verdict::Degraded);
+    }
+
+    #[test]
+    fn an_undatable_error_is_treated_as_current() {
+        // Unknown recency must not silently downgrade a real error to history.
+        let d = diagnose_at(
+            &container(running(), 0),
+            &[error_cluster("ERROR connection refused", 13, Level::Error)],
+            1_800_000_000,
+        );
+        assert_eq!(d.status, Verdict::Degraded);
     }
 
     #[test]
