@@ -5,7 +5,8 @@ An **engine-agnostic, agent-ergonomic Docker MCP server** in Rust.
 Bosun exposes container lifecycle, logs, stats and Compose as MCP tools — but every
 read is **bounded and summarizing by default**, every destructive write is **gated**,
 and it talks the plain Docker Engine socket, so it drives Docker, OrbStack, Podman or
-Colima interchangeably.
+Colima through the same code path — see [what has actually been
+tested](#what-has-actually-been-tested).
 
 It is not a monitoring daemon. It is a control surface for a human-in-the-loop agent.
 
@@ -372,6 +373,22 @@ restarted nine times over three months is not.
 
 ## Engine discovery
 
+### What has actually been tested
+
+| Engine | Status |
+|---|---|
+| **OrbStack** | verified — primary development target |
+| **Podman 6.0.2** (macOS, `podman machine`) | verified — discovery, `podman` detection, `list_containers`, `diagnose_container` |
+| Docker Desktop | not tested; uses the same `/var/run/docker.sock` path |
+| Colima | not tested; path is in the search order but unexercised |
+
+Being precise because the earlier version of this README claimed "drives Docker, OrbStack,
+Podman or Colima interchangeably" on the strength of unit tests alone — and on macOS that
+was **false**. `XDG_RUNTIME_DIR` is unset there, so the only Podman candidate never fired,
+and the real socket lives at `$TMPDIR/podman/podman-machine-default-api.sock` — neither
+the path in the code nor the one the docs suggest.
+
+
 Resolved in order, first hit wins:
 
 1. `--socket` flag
@@ -379,7 +396,8 @@ Resolved in order, first hit wins:
 3. `~/.orbstack/run/docker.sock`
 4. `~/.colima/default/docker.sock`
 5. `/var/run/docker.sock`
-6. `$XDG_RUNTIME_DIR/podman/podman.sock`
+6. `$XDG_RUNTIME_DIR/podman/podman.sock` — Podman rootless, **Linux only**
+7. `$TMPDIR/podman/*-api.sock` — `podman machine`, macOS/Windows
 
 OrbStack and Colima come before `/var/run/docker.sock` because on macOS that path is
 usually a symlink into one of them — matching the real path first yields an honest
