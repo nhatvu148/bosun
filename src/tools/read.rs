@@ -97,8 +97,12 @@ pub struct ContainerLogsParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContainerStatsParams {
-    /// Container id or name.
-    pub id: String,
+    /// A single container id or name.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Several containers in one call. Use ["*"] for every running container.
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -377,33 +381,83 @@ impl BosunServer {
     /// The caller still gets one object back, never a stream.
     #[tool(
         name = "container_stats",
-        description = "One resource snapshot for a container: CPU %, memory used/limit/percent, network rx/tx, \
-                       block IO, and PIDs. Returns a SINGLE digest object, never a stream — takes two internal \
-                       samples ~1s apart because CPU % is a delta between readings. Only works on a running \
-                       container.",
+        description = "Resource snapshot: CPU %, memory used/limit/percent, network rx/tx, block IO, PIDs. \
+                       BATCH-CAPABLE — pass ids=[\"*\"] to snapshot EVERY running container in one call, or \
+                       ids=[\"a\",\"b\"] for several. Prefer that over calling this once per container. \
+                       Returns digest objects, never a stream; samples are taken concurrently, two per \
+                       container ~1s apart because CPU % is a delta between readings.",
         annotations(title = "Container stats snapshot", read_only_hint = true)
     )]
     pub async fn container_stats(
         &self,
         Parameters(params): Parameters<ContainerStatsParams>,
     ) -> CallToolResult {
+        let ids = match crate::tools::resolve_ids(
+            self.engine(),
+            params.id.as_deref(),
+            &params.ids,
+            // Stats only exist for running containers, so "*" means running.
+            false,
+        )
+        .await
+        {
+            Ok(ids) => ids,
+            Err(e) => return tool_error(e),
+        };
+
+        if ids.len() == 1 {
+            return match self.stats_one(&ids[0]).await {
+                Ok(value) => {
+                    bounded_json(&value, "container_stats", "Unexpectedly large — report this.")
+                }
+                Err(e) => tool_error(e),
+            };
+        }
+
+        // Concurrent: each snapshot costs ~1s of wall clock waiting for the
+        // second sample, so serially this would scale linearly with the fleet.
+        let results = futures_util::future::join_all(ids.iter().map(|id| self.stats_one(id))).await;
+
+        let mut stats = Vec::new();
+        let mut failed = Vec::new();
+        for (id, result) in ids.iter().zip(results) {
+            match result {
+                Ok(value) => stats.push(value),
+                // One unreadable container must not sink the whole batch.
+                Err(e) => failed.push(serde_json::json!({ "container": id, "error": e })),
+            }
+        }
+
+        let mut payload = serde_json::json!({ "stats": stats });
+        if !failed.is_empty() {
+            payload["unavailable"] = failed.into();
+        }
+        bounded_json(
+            &payload,
+            "container_stats",
+            "Too many containers at once — pass a shorter ids list.",
+        )
+    }
+
+    /// Snapshot one container. Split out so the batch path can run these
+    /// concurrently — each call spends ~1s waiting for its second sample.
+    async fn stats_one(&self, id: &str) -> Result<serde_json::Value, String> {
         // stream=true gives consecutive samples; we take exactly two and stop.
         let options = StatsOptionsBuilder::new().stream(true).one_shot(false).build();
-        let mut stream = self.engine().docker().stats(&params.id, Some(options));
+        let mut stream = self.engine().docker().stats(id, Some(options));
 
         let mut samples = Vec::with_capacity(2);
         for _ in 0..2 {
             match stream.next().await {
                 Some(Ok(s)) => samples.push(s),
-                Some(Err(e)) => return engine_error("container_stats failed", &params.id, e),
+                Some(Err(e)) => return Err(format!("stats failed for '{id}': {e}")),
                 None => break,
             }
         }
 
         let Some(latest) = samples.last() else {
-            return tool_error(format!(
-                "no stats available for '{}'. The container is probably not running — check list_containers.",
-                params.id
+            return Err(format!(
+                "no stats available for '{id}' — it is probably not running"
             ));
         };
 
@@ -431,7 +485,7 @@ impl BosunServer {
         // cumulative counters where the magnitude is the whole answer, so the
         // human rendering alone carries it.
         let mut payload = serde_json::json!({
-            "container": strip_leading_slash(latest.name.as_deref().unwrap_or(&params.id)),
+            "container": strip_leading_slash(latest.name.as_deref().unwrap_or(id)),
             "cpu": {
                 "percent": cpu_percent(latest).map(round2),
                 "online_cpus": latest.cpu_stats.as_ref().and_then(|c| c.online_cpus),
@@ -459,10 +513,9 @@ impl BosunServer {
                 "Only one sample was available, so cpu.percent could not be computed.".into();
         }
 
-        bounded_json(&payload, "container_stats", "Unexpectedly large — report this.")
+        Ok(payload)
     }
 
-    /// List images: id, tags, size, age.
     #[tool(
         name = "list_images",
         description = "List images as compact rows: id, tags, size, age, and how many containers use each. \

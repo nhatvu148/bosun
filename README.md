@@ -202,6 +202,50 @@ fails if any tool lacks a `safety::risk_of` entry, or if a destructive one doesn
 declare `destructive_hint` and expose both gates in its schema. A new destructive tool
 cannot ship un-gated by accident.
 
+#### What the gate does and does not guarantee
+
+Be precise about this, because it is easy to over-read.
+
+**It does:** force the caller to identify its target before acting, which prevents
+acting on the wrong container; make destruction impossible as an accidental side effect
+of a vaguely-worded request; produce an audit line for every authorized action; and
+give the caller a way to see the consequences first.
+
+**It does not:** put a human in the loop. An agent can look up a container's name and
+echo it back on its own — that is the intended flow, not a bypass. The confirm token is
+an *agent-attention* mechanism, not an approval mechanism.
+
+#### Elicitation — the check an agent genuinely cannot satisfy
+
+When the client advertises the MCP **elicitation** capability, every destructive tool
+asks the operator directly before acting, and the confirm token is no longer required —
+a human said yes, so demanding a token too would be asking the same question twice:
+
+```
+Bosun wants to remove container 'my-db' (force-killing it) and its anonymous volumes.
+
+  • container 'my-db' would be removed
+  • running container 'my-db' would be KILLED first
+  • anonymous volume 'a1b2…' would be DELETED (irreversible)
+
+Approve?
+```
+
+No agent can answer that on the operator's behalf. Order of authority is:
+
+1. `dry_run` — nothing will happen, so there is nothing to approve
+2. **elicitation**, if the client supports it — a real human decision
+3. the `confirm` token, as the fallback
+
+Clients that don't implement elicitation fall back to step 3 automatically, which is
+most of them today. Failing closed instead would break every such client, so the
+fallback is deliberate — but note it means the strength of the gate depends on your
+client. `bosun_info` reports which mode is in effect.
+
+An elicitation that *errors* is treated as denial rather than falling back: a client
+that advertised the capability and then failed to deliver has told us nothing about
+consent, and that is the one place failing closed is right.
+
 ### Why exec exists
 
 `container_exec` was excluded from v1 on the reasoning that arbitrary code execution is

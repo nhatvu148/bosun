@@ -37,6 +37,115 @@ pub fn engine_error(context: &str, id: &str, err: bollard::errors::Error) -> Cal
     tool_error(message)
 }
 
+/// The full authorization path for a destructive operation, shared by every
+/// tool that has one so they cannot drift apart.
+///
+/// Order, and why:
+/// 1. `dry_run` — nothing will happen, so there is nothing to approve.
+/// 2. Ask the operator, if the client supports elicitation. This is the only
+///    check an agent cannot satisfy by itself, so it outranks the token; once a
+///    human has said yes, demanding a token too would be asking twice.
+/// 3. Otherwise fall back to the §6 confirm token.
+///
+/// `Ok(())` means proceed. `Err(result)` is the response to return unchanged.
+pub async fn authorize(
+    peer: &rmcp::service::Peer<rmcp::RoleServer>,
+    op: &crate::safety::Guarded<'_>,
+    dry_run: bool,
+    confirm: Option<&str>,
+) -> Result<(), CallToolResult> {
+    use crate::safety::{Authorization, Decision, HumanVerdict, ask_human, gate};
+
+    if dry_run {
+        let Decision::DryRun(report) = gate(
+            op,
+            Authorization {
+                dry_run: true,
+                confirm: None,
+            },
+        ) else {
+            unreachable!("dry_run always yields a preview");
+        };
+        return Err(crate::bound::bounded_json(
+            &report,
+            op.tool,
+            "Unexpectedly large — report this.",
+        ));
+    }
+
+    match ask_human(peer, op).await {
+        HumanVerdict::Approved => Ok(()),
+        HumanVerdict::Denied(why) => Err(tool_error(format!(
+            "{} on '{}' was not run because {why}.",
+            op.tool, op.target
+        ))),
+        HumanVerdict::NotSupported => match gate(
+            op,
+            Authorization {
+                dry_run: false,
+                confirm,
+            },
+        ) {
+            Decision::Authorized => Ok(()),
+            Decision::Refused(refusal) => Err(crate::bound::bounded_json(
+                &refusal,
+                op.tool,
+                "Unexpectedly large — report this.",
+            )),
+            Decision::DryRun(_) => unreachable!("dry_run handled above"),
+        },
+    }
+}
+
+/// Resolve the container selector shared by the batch-capable read tools.
+///
+/// Accepts a single `id`, an explicit `ids` list, or the literal `"*"` meaning
+/// every container. The wildcard is the point: a "how is everything doing"
+/// question otherwise costs one tool call per container, and the call count —
+/// not the bytes per call — is what dominates that shape of request.
+pub async fn resolve_ids(
+    engine: &crate::engine::client::EngineClient,
+    id: Option<&str>,
+    ids: &[String],
+    include_stopped: bool,
+) -> Result<Vec<String>, String> {
+    let requested: Vec<&str> = if !ids.is_empty() {
+        ids.iter().map(String::as_str).collect()
+    } else if let Some(one) = id {
+        vec![one]
+    } else {
+        return Err("pass either id=\"<name>\" or ids=[\"a\",\"b\"], or ids=[\"*\"] for all containers".into());
+    };
+
+    if !requested.contains(&"*") {
+        return Ok(requested.into_iter().map(str::to_string).collect());
+    }
+
+    let containers = engine
+        .docker()
+        .list_containers(Some(
+            bollard::query_parameters::ListContainersOptionsBuilder::new()
+                .all(include_stopped)
+                .build(),
+        ))
+        .await
+        .map_err(|e| format!("could not expand ids=[\"*\"]: {e}"))?;
+
+    let mut names: Vec<String> = containers
+        .iter()
+        .filter_map(|c| {
+            c.names
+                .as_deref()
+                .unwrap_or_default()
+                .first()
+                .map(|n| crate::bound::project::strip_leading_slash(n))
+                .or_else(|| c.id.clone())
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 /// Parse a caller-supplied `since` value into a unix timestamp.
 ///
 /// Accepts a relative duration (`30s`, `5m`, `2h`, `3d`) because that is how a

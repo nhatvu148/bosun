@@ -29,7 +29,7 @@ use tokio::process::Command;
 use crate::bound::bounded_json;
 use crate::bound::project::{clip, strip_leading_slash};
 use crate::engine::client::EngineClient;
-use crate::safety::{self, Authorization, Decision, Guarded};
+use crate::safety::{self, Guarded};
 use crate::server::BosunServer;
 use crate::tools::tool_error;
 
@@ -202,6 +202,7 @@ impl BosunServer {
     pub async fn compose_down(
         &self,
         Parameters(params): Parameters<ComposeDownParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> CallToolResult {
         let working_dir = match self
             .resolve_working_dir(&params.project, params.working_dir.as_deref())
@@ -259,20 +260,15 @@ impl BosunServer {
                 consequences,
             };
 
-            match safety::gate(
+            if let Err(response) = crate::tools::authorize(
+                &context.peer,
                 &guarded,
-                Authorization {
-                    dry_run: params.dry_run,
-                    confirm: params.confirm.as_deref(),
-                },
-            ) {
-                Decision::DryRun(report) => {
-                    return bounded_json(&report, "compose_down", "Unexpectedly large — report this.");
-                }
-                Decision::Refused(refusal) => {
-                    return bounded_json(&refusal, "compose_down", "Unexpectedly large — report this.");
-                }
-                Decision::Authorized => {}
+                params.dry_run,
+                params.confirm.as_deref(),
+            )
+            .await
+            {
+                return response;
             }
         }
 

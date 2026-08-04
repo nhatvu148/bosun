@@ -32,7 +32,7 @@ use serde::Deserialize;
 
 use crate::bound::bounded_json;
 use crate::bound::project::{clip, short_id, strip_leading_slash};
-use crate::safety::{self, Authorization, Decision, Guarded};
+use crate::safety::{self, Guarded};
 use crate::server::BosunServer;
 use crate::tools::{engine_error, tool_error};
 
@@ -201,6 +201,7 @@ impl BosunServer {
     pub async fn container_rm(
         &self,
         Parameters(params): Parameters<RemoveContainerParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> CallToolResult {
         // Resolve the container before gating: the confirm token is checked
         // against the real name, and the dry run needs to report real volumes.
@@ -280,20 +281,15 @@ impl BosunServer {
             consequences,
         };
 
-        match safety::gate(
+        if let Err(response) = crate::tools::authorize(
+            &context.peer,
             &guarded,
-            Authorization {
-                dry_run: params.dry_run,
-                confirm: params.confirm.as_deref(),
-            },
-        ) {
-            Decision::DryRun(report) => {
-                return bounded_json(&report, "container_rm", "Unexpectedly large — report this.");
-            }
-            Decision::Refused(refusal) => {
-                return bounded_json(&refusal, "container_rm", "Unexpectedly large — report this.");
-            }
-            Decision::Authorized => {}
+            params.dry_run,
+            params.confirm.as_deref(),
+        )
+        .await
+        {
+            return response;
         }
 
         let options = RemoveContainerOptionsBuilder::new()
@@ -416,6 +412,7 @@ impl BosunServer {
     pub async fn container_exec(
         &self,
         Parameters(params): Parameters<ExecParams>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> CallToolResult {
         if params.cmd.is_empty() {
             return tool_error(
@@ -464,20 +461,15 @@ impl BosunServer {
             consequences,
         };
 
-        match safety::gate(
+        if let Err(response) = crate::tools::authorize(
+            &context.peer,
             &guarded,
-            Authorization {
-                dry_run: params.dry_run,
-                confirm: params.confirm.as_deref(),
-            },
-        ) {
-            Decision::DryRun(report) => {
-                return bounded_json(&report, "container_exec", "Unexpectedly large — report this.");
-            }
-            Decision::Refused(refusal) => {
-                return bounded_json(&refusal, "container_exec", "Unexpectedly large — report this.");
-            }
-            Decision::Authorized => {}
+            params.dry_run,
+            params.confirm.as_deref(),
+        )
+        .await
+        {
+            return response;
         }
 
         let config = CreateExecOptions {

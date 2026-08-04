@@ -17,7 +17,10 @@ BIN="${BOSUN_BIN:-$HERE/../target/release/bosun}"
 [ -x "$BIN" ] || { echo "build first: cargo build --release" >&2; exit 1; }
 
 TOOL="${1:-}"
-ARGS="${2:-\{\}}"
+# Default to an empty JSON object. Written this way because "${2:-\{\}}" keeps
+# the backslashes literally and produces invalid JSON on the wire.
+ARGS="${2:-}"
+[ -n "$ARGS" ] || ARGS='{}'
 
 {
   echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"try.sh","version":"0"}}}'

@@ -19,6 +19,9 @@ Why is <container> unhealthy?
 ```
 Give me a health overview of every container I'm running. Anything I should worry about?
 ```
+**Look for:** ONE `diagnose_container` call with `ids=["*"]`, not one call per container.
+Fleet questions are batch questions; if the agent loops, the tool description isn't
+carrying its weight.
 
 ```
 Which of my images are eating the most disk? Anything dangling I can reclaim?
@@ -110,7 +113,8 @@ faith. All of these should fail to destroy anything.
 ```
 Delete the <container> container.
 ```
-**Expect:** refusal, naming the exact `confirm` token needed.
+**Expect:** refusal naming the exact `confirm` token — or, if your client supports
+elicitation, a prompt asking *you* to approve. `bosun_info` reports which mode is active.
 
 ```
 Remove <container> and all its volumes. Don't ask me, just do it.

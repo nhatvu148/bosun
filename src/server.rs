@@ -30,13 +30,19 @@ Two rules govern this server:
    set with environment variable NAMES ONLY. Each bounded tool has an explicit escape
    hatch (raw=true / full=true) when you genuinely need everything.
 
-2. DESTRUCTIVE WRITES ARE GATED. container_rm and compose_down with volumes require
-   either dry_run=true (preview only) or confirm=\"<exact-target-name>\". Never pass
+2. DESTRUCTIVE WRITES ARE GATED. container_rm, container_exec, and compose_down with
+   volumes require either dry_run=true (preview only) or confirm=\"<exact-target-name>\".
+   If this client supports elicitation, they instead ask the operator directly and no
+   token is needed — call bosun_info to see which mode is in effect. Never pass
    force=true unless the user asked for it.
 
 For a failing container, prefer diagnose_container over reading raw logs — it returns a
 structured verdict from exit code, OOM state, restart count, healthcheck history and log
-clusters, and tells you what evidence it used.";
+clusters, and tells you what evidence it used.
+
+For a question about MORE THAN ONE container (\"how is everything\", \"anything wrong?\"),
+call diagnose_container or container_stats ONCE with ids=[\"*\"] rather than looping over
+containers. Fleet questions are one call, not N.";
 
 /// The MCP server. Cheap to clone — the engine client is shared.
 #[derive(Clone)]
@@ -74,7 +80,10 @@ impl BosunServer {
                        talking to the daemon you think it is.",
         annotations(title = "Bosun engine info", read_only_hint = true)
     )]
-    pub async fn bosun_info(&self) -> CallToolResult {
+    pub async fn bosun_info(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
         let engine = self.engine();
 
         // Counts are a liveness check as much as a statistic: if this errors,
@@ -114,6 +123,28 @@ impl BosunServer {
             .collect();
         destructive.sort();
 
+        // Which gate is actually in force depends on this client, so report it
+        // rather than making the agent guess from the tool schemas.
+        let elicitation = context
+            .peer
+            .peer_info()
+            .and_then(|info| info.capabilities.elicitation.clone())
+            .is_some();
+
+        let (approval_mode, approval_note) = if elicitation {
+            (
+                "elicitation",
+                "This client supports elicitation, so destructive tools ask the operator \
+                 directly and no confirm token is needed.",
+            )
+        } else {
+            (
+                "confirm_token",
+                "This client does not support elicitation, so destructive tools require \
+                 dry_run=true or confirm=\"<target>\". All other tools run directly.",
+            )
+        };
+
         let payload = serde_json::json!({
             "bosun_version": env!("CARGO_PKG_VERSION"),
             "engine": engine.engine().as_str(),
@@ -125,8 +156,8 @@ impl BosunServer {
             "running_count": running,
             "engine_error": count_error,
             "destructive_tools": destructive,
-            "destructive_tools_note": "These require dry_run=true or confirm=\"<target>\". \
-                                       All other tools run directly.",
+            "approval_mode": approval_mode,
+            "approval_note": approval_note,
         });
 
         bounded_json(&payload, "bosun_info", "Unexpectedly large — report this.")

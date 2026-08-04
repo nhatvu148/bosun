@@ -22,7 +22,7 @@ use crate::bound::bounded_json;
 use crate::bound::logs::{self, Cluster, Level};
 use crate::bound::project::strip_leading_slash;
 use crate::server::BosunServer;
-use crate::tools::{engine_error, tool_error};
+use crate::tools::tool_error;
 
 /// Log lines to sample when diagnosing. Enough to see a crash-loop pattern
 /// without turning a diagnosis into a log dump.
@@ -39,6 +39,17 @@ const CRASH_LOOP_THRESHOLD: i64 = 3;
 /// it, sampling a looping container in the instant it happens to be running
 /// reports it as healthy.
 const CRASH_LOOP_UPTIME_SECS: i64 = 60;
+
+/// How often an error must recur before it downgrades an otherwise-healthy
+/// running container.
+///
+/// One error line in a 300-line window is weak evidence — long-lived services
+/// log routine, self-recovering errors (Postgres cancelling an autovacuum, a
+/// client disconnecting mid-request). Calling those "degraded" produces exactly
+/// the alert fatigue that makes a status field worthless. A *repeated* error is
+/// a different claim, so that is what the verdict keys on; the one-off is still
+/// reported as evidence, just not treated as a diagnosis.
+const ERROR_CLUSTER_THRESHOLD: usize = 3;
 
 /// Overall health of the container, as Bosun reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -75,8 +86,14 @@ pub struct Diagnosis {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiagnoseParams {
-    /// Container id or name.
-    pub id: String,
+    /// A single container id or name.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Several containers in one call. Use ["*"] for every container,
+    /// including stopped ones — which is usually what you want, since a
+    /// stopped container is often the thing that needs diagnosing.
+    #[serde(default)]
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -100,32 +117,74 @@ impl BosunServer {
                        structured verdict — status, likely_cause, evidence[], suggested_actions[] — computed \
                        DETERMINISTICALLY from exit code, State.OOMKilled, restart count, healthcheck history \
                        and clustered log signals. No LLM inference happens inside Bosun; every conclusion \
-                       lists the evidence it came from, so you can check the reasoning and disagree.",
+                       lists the evidence it came from, so you can check the reasoning and disagree. \
+                       BATCH-CAPABLE — for a whole-fleet health question pass ids=[\"*\"] to diagnose every \
+                       container in ONE call rather than looping.",
         annotations(title = "Diagnose container", read_only_hint = true)
     )]
     pub async fn diagnose_container(
         &self,
         Parameters(params): Parameters<DiagnoseParams>,
     ) -> CallToolResult {
-        let inspect = match self
-            .engine()
-            .docker()
-            .inspect_container(&params.id, None::<InspectContainerOptions>)
-            .await
+        let ids = match crate::tools::resolve_ids(
+            self.engine(),
+            params.id.as_deref(),
+            &params.ids,
+            // Stopped containers are frequently the ones worth diagnosing.
+            true,
+        )
+        .await
         {
-            Ok(i) => i,
-            Err(e) => return engine_error("diagnose_container failed", &params.id, e),
+            Ok(ids) => ids,
+            Err(e) => return tool_error(e),
         };
 
-        // Log signals are best-effort: a container with no logs is still
-        // diagnosable from its exit code and restart count.
-        let clusters = self.sample_log_clusters(&params.id).await;
+        if ids.len() == 1 {
+            return match self.diagnose_one(&ids[0]).await {
+                Ok(d) => bounded_json(
+                    &d,
+                    "diagnose_container",
+                    "Unexpectedly large — call container_logs directly instead.",
+                ),
+                Err(e) => tool_error(e),
+            };
+        }
 
-        let diagnosis = diagnose(&inspect, &clusters);
+        // Each diagnosis is an inspect plus a log pull, so concurrency is what
+        // makes a fleet-wide call practical rather than merely possible.
+        let results =
+            futures_util::future::join_all(ids.iter().map(|id| self.diagnose_one(id))).await;
+
+        let mut diagnoses = Vec::new();
+        let mut failed = Vec::new();
+        for (id, result) in ids.iter().zip(results) {
+            match result {
+                Ok(d) => diagnoses.push(d),
+                Err(e) => failed.push(serde_json::json!({ "container": id, "error": e })),
+            }
+        }
+
+        // Surface the ones that need attention up front — with a fleet-sized
+        // response, "which of these should I read" is the first question.
+        let needs_attention: Vec<&str> = diagnoses
+            .iter()
+            .filter(|d| !matches!(d.status, Verdict::Healthy | Verdict::Stopped))
+            .map(|d| d.container.as_str())
+            .collect();
+
+        let mut payload = serde_json::json!({
+            "diagnosed": diagnoses.len(),
+            "needs_attention": needs_attention,
+            "diagnoses": diagnoses,
+        });
+        if !failed.is_empty() {
+            payload["unavailable"] = failed.into();
+        }
+
         bounded_json(
-            &diagnosis,
+            &payload,
             "diagnose_container",
-            "Unexpectedly large — call container_logs directly instead.",
+            "Too many containers at once — pass a shorter ids list.",
         )
     }
 
@@ -255,6 +314,21 @@ impl BosunServer {
 }
 
 impl BosunServer {
+    /// Diagnose one container. Split out so the batch path can fan out.
+    async fn diagnose_one(&self, id: &str) -> Result<Diagnosis, String> {
+        let inspect = self
+            .engine()
+            .docker()
+            .inspect_container(id, None::<InspectContainerOptions>)
+            .await
+            .map_err(|e| format!("inspect failed for '{id}': {e}"))?;
+
+        // Log signals are best-effort: a container with no logs is still
+        // diagnosable from its exit code and restart count.
+        let clusters = self.sample_log_clusters(id).await;
+        Ok(diagnose(&inspect, &clusters))
+    }
+
     /// Pull a bounded log window and cluster it, for diagnostic signal.
     ///
     /// Errors are swallowed on purpose: a container with unreadable logs is
@@ -443,12 +517,15 @@ fn diagnose_at(
             Verdict::Unknown,
             Some("Running, but still inside its healthcheck start period.".to_string()),
         )
-    } else if let Some(worst) = clusters.iter().find(|c| c.level >= Level::Error) {
+    } else if let Some(worst) = clusters
+        .iter()
+        .find(|c| c.level >= Level::Fatal || (c.level >= Level::Error && c.count >= ERROR_CLUSTER_THRESHOLD))
+    {
         actions.push("Call container_logs(id, level='error') for the full picture".into());
         (
             Verdict::Degraded,
             Some(format!(
-                "Running, but emitting errors: {} (seen {}x)",
+                "Running, but emitting errors repeatedly: {} (seen {}x)",
                 worst.sample, worst.count
             )),
         )
@@ -913,30 +990,60 @@ mod tests {
         assert_eq!(d.status, Verdict::Unknown);
     }
 
-    #[test]
-    fn error_logs_degrade_an_otherwise_healthy_container() {
-        let cluster = Cluster {
-            template: "connection refused to <IP>".into(),
-            sample: "ERROR connection refused to 10.0.0.5".into(),
-            count: 42,
-            level: Level::Error,
+    fn error_cluster(sample: &str, count: usize, level: Level) -> Cluster {
+        Cluster {
+            template: sample.to_string(),
+            sample: sample.to_string(),
+            count,
+            level,
             first_seen: None,
             last_seen: None,
             stderr: true,
-        };
+        }
+    }
+
+    fn running() -> ContainerState {
+        ContainerState {
+            running: Some(true),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn repeated_errors_degrade_an_otherwise_healthy_container() {
         let d = diagnose(
-            &container(
-                ContainerState {
-                    running: Some(true),
-                    ..Default::default()
-                },
-                0,
-            ),
-            &[cluster],
+            &container(running(), 0),
+            &[error_cluster("ERROR connection refused to 10.0.0.5", 42, Level::Error)],
         );
         assert_eq!(d.status, Verdict::Degraded);
         assert!(d.likely_cause.as_ref().unwrap().contains("connection refused"));
         assert_eq!(d.log_signals.len(), 1);
+    }
+
+    /// Found by running the fleet-wide diagnosis for real: a single "canceling
+    /// autovacuum task" line demoted a perfectly healthy Postgres. Long-lived
+    /// services log routine self-recovering errors, and treating one of those as
+    /// a verdict is how a status field stops meaning anything.
+    #[test]
+    fn a_single_stray_error_does_not_demote_a_healthy_container() {
+        let d = diagnose(
+            &container(running(), 0),
+            &[error_cluster("ERROR:  canceling autovacuum task", 1, Level::Error)],
+        );
+        assert_eq!(d.status, Verdict::Healthy);
+        assert!(d.likely_cause.is_none());
+        // Still reported as evidence — suppressed from the verdict, not hidden.
+        assert!(d.evidence.iter().any(|e| e.contains("autovacuum")));
+    }
+
+    #[test]
+    fn one_fatal_line_is_enough_on_its_own() {
+        // A panic does not need to repeat to be worth reporting.
+        let d = diagnose(
+            &container(running(), 0),
+            &[error_cluster("panic: nil map write", 1, Level::Fatal)],
+        );
+        assert_eq!(d.status, Verdict::Degraded);
     }
 
     #[test]
