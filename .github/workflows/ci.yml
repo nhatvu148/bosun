@@ -43,6 +43,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # `remote` is off by default, so --all-features alone would never compile
+      # the default configuration most users actually install. Both must build.
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
       # The suite is deliberately daemon-free: every test runs against fixtures
       # or pure functions, so CI needs no Docker socket. If a test ever starts
       # needing one, that is a signal the logic should be extracted, not that
@@ -50,8 +55,14 @@ jobs:
       - name: Tests
         run: cargo test --all-features
 
-      - name: Release build
+      - name: Tests (default features)
+        run: cargo test
+
+      - name: Release build (default)
         run: cargo build --release
+
+      - name: Release build (remote transports)
+        run: cargo build --release --features remote
 
       - name: Engine discovery smoke test
         # GitHub runners ship a running Docker, so the success path is the one

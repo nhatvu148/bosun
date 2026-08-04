@@ -37,6 +37,16 @@ impl EngineClient {
         // which daemon you are driving is the single most dangerous thing this
         // server can do, since every destructive tool acts on that answer.
         let docker = if is_remote(&endpoint.address) {
+            // Without the `remote` feature bollard reports only "URI scheme is
+            // not supported", which reads like the scheme is wrong rather than
+            // like this build simply omits it. Name the actual fix.
+            #[cfg(not(feature = "remote"))]
+            if needs_remote_feature(&endpoint.address) {
+                return Err(ConnectError::RemoteFeatureMissing {
+                    address: endpoint.address.clone(),
+                });
+            }
+
             Docker::connect_with_host(&endpoint.address).map_err(|source| {
                 ConnectError::Connect {
                     address: endpoint.address.clone(),
@@ -134,6 +144,12 @@ impl EngineClient {
     }
 }
 
+/// Schemes that only exist when the `remote` feature is compiled in.
+#[cfg(not(feature = "remote"))]
+fn needs_remote_feature(address: &str) -> bool {
+    address.starts_with("ssh://") || address.starts_with("https://")
+}
+
 /// Is this address something other than a local unix socket path?
 ///
 /// `tcp://`, `http://`, `https://`, `ssh://` and `npipe://` all need bollard's
@@ -153,6 +169,14 @@ pub enum ConnectError {
         #[source]
         source: bollard::errors::Error,
     },
+
+    #[error(
+        "'{address}' needs the `remote` feature, which this build does not have.\n\
+         Install it with:  cargo install bosun-mcp --features remote\n\
+         It is off by default because ssh/TLS support costs ~34 crates and ~1.7 MB \
+         that a local-socket user never touches. Plain tcp:// works without it."
+    )]
+    RemoteFeatureMissing { address: String },
 
     #[error(
         "connected to '{address}' but it never answered /version: {source}\n\

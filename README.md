@@ -37,8 +37,11 @@ context window unread.* If it isn't, the tool is wrong.
 
 ```bash
 cargo install --path .
-# or, once published:
-cargo install bosun
+
+# Remote daemons over ssh:// or https:// need one extra feature.
+# Off by default: it costs ~34 crates and ~1.7 MB a local-socket user
+# never touches.
+cargo install --path . --features remote
 ```
 
 This puts `bosun` in `~/.cargo/bin`. If `bosun: command not found`, that directory
@@ -202,6 +205,35 @@ fails if any tool lacks a `safety::risk_of` entry, or if a destructive one doesn
 declare `destructive_hint` and expose both gates in its schema. A new destructive tool
 cannot ship un-gated by accident.
 
+#### Read-only mode — when the gate isn't enough
+
+For a host you are not willing to have an agent change, don't rely on a gate at all:
+
+```bash
+bosun --read-only            # or BOSUN_READ_ONLY=1
+```
+
+Every write tool — start, stop, restart, pull, compose up/down, rm, exec — is **removed
+from the tool list**, not merely refused. An agent cannot misuse a tool it was never told
+exists, which is a stronger guarantee than any runtime check because the enforcement is
+the absence of the code path. Calling one fails at the protocol level with
+`tool not found`.
+
+| | Tools | Resident tokens |
+|---|---:|---:|
+| default | 18 | 4,476 |
+| `--read-only` | 10 | 2,574 |
+
+The whole diagnostic surface survives — `diagnose_container`, `container_logs`,
+`why_compose_failing` and the rest — so read-only Bosun is still the tool you want for
+*troubleshooting* production. It just cannot act on it. The handshake tells the agent it
+is read-only, so it says "this instance cannot do that" rather than hunting for a
+workaround, and `bosun_info` reports the mode.
+
+The filter is driven by the same classification the safety tests enforce, and an
+**unclassified tool is removed, not kept** — a new tool cannot leak into read-only mode
+by someone forgetting to think about it.
+
 #### What the gate does and does not guarantee
 
 Be precise about this, because it is easy to over-read.
@@ -360,7 +392,9 @@ reports that explicitly rather than failing cryptically.
 ### Remote hosts
 
 `--socket` and `DOCKER_HOST` accept `ssh://user@host`, `tcp://host:2375` and
-`https://host:2376` as well as local paths:
+`https://host:2376` as well as local paths. **`ssh://` and `https://` require
+`--features remote`**; a build without it says so and names the fix rather than
+reporting an unsupported scheme.
 
 ```bash
 bosun --check --socket ssh://deploy@prod.example.com
