@@ -90,6 +90,9 @@ With an explicit socket and debug logging:
 
 Then `/mcp` in Claude Code should list bosun with 17 tools.
 
+See [docs/prompts.md](docs/prompts.md) for things to ask it, grouped by what each one
+exercises — including a set for attacking the write-safety gate.
+
 ---
 
 ## Tools
