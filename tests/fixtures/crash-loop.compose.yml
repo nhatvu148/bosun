@@ -1,0 +1,30 @@
+# Diagnostic fixture: a container that fails immediately and keeps restarting.
+#
+# Exercises: diagnose_container's crash-loop branch, explain_exit_code(1), and
+# container_logs' cluster-dedup (the same error line repeats every restart, so a
+# correct digest returns ONE cluster with a high count — not N identical lines).
+#
+#   docker compose -p bosun-fixture-crash -f crash-loop.compose.yml up -d
+#   # then, in Claude Code: diagnose_container(id="bosun-crash-loop")
+#   docker compose -p bosun-fixture-crash -f crash-loop.compose.yml down
+
+services:
+  crash-loop:
+    image: busybox:latest
+    container_name: bosun-crash-loop
+    restart: always
+    # Log a line, then fail. `restart: always` turns this into a loop, driving
+    # restart_count up past the crash-loop threshold.
+    command: >
+      sh -c "echo 'ERROR failed to connect to database at 10.0.0.5:5432' >&2;
+             echo 'ERROR retrying in 1s' >&2;
+             sleep 1;
+             exit 1"
+
+  # Same failure, but exiting 127 — the "command not found" case, which should
+  # decode differently from a generic exit 1.
+  missing-binary:
+    image: busybox:latest
+    container_name: bosun-missing-binary
+    restart: "no"
+    command: /usr/local/bin/definitely-not-here
