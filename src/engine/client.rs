@@ -173,9 +173,15 @@ pub enum ConnectError {
     /// Only reachable in a build without `remote`; with the feature on, the
     /// scheme works and the variant would be dead code.
     #[cfg(not(feature = "remote"))]
+    // Names the feature rather than a package, deliberately. An earlier version
+    // said `cargo install bosun-mcp`, a crate that does not exist yet, and the
+    // obvious correction — `cargo install bosun` — is worse: that name is a
+    // squatted v0.0.0-reserved placeholder on crates.io, so it would install a
+    // stranger's empty crate instead of failing. Instructions that name a
+    // feature stay correct however the reader obtained the binary.
     #[error(
         "'{address}' needs the `remote` feature, which this build does not have.\n\
-         Install it with:  cargo install bosun-mcp --features remote\n\
+         Rebuild with it enabled, e.g.  cargo install --path . --features remote\n\
          It is off by default because ssh/TLS support costs ~34 crates and ~1.7 MB \
          that a local-socket user never touches. Plain tcp:// works without it."
     )]
