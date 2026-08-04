@@ -170,6 +170,9 @@ pub enum ConnectError {
         source: bollard::errors::Error,
     },
 
+    /// Only reachable in a build without `remote`; with the feature on, the
+    /// scheme works and the variant would be dead code.
+    #[cfg(not(feature = "remote"))]
     #[error(
         "'{address}' needs the `remote` feature, which this build does not have.\n\
          Install it with:  cargo install bosun-mcp --features remote\n\
