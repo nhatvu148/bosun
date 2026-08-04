@@ -242,6 +242,25 @@ reports that explicitly rather than failing cryptically.
 
 ---
 
+## Trying it without an MCP client
+
+`scripts/try.sh` drives the server over stdio exactly as a client would, so you can
+exercise any tool from a shell:
+
+```bash
+cargo build --release
+
+./scripts/try.sh                                     # handshake + list tools
+./scripts/try.sh bosun_info
+./scripts/try.sh explain_exit_code '{"code":137}'    # no daemon needed
+./scripts/try.sh list_containers '{"all":true}'
+./scripts/try.sh diagnose_container '{"id":"my-container"}'
+./scripts/try.sh container_logs '{"id":"my-container","level":"error"}'
+./scripts/try.sh container_rm '{"id":"my-container","dry_run":true}'   # previews, removes nothing
+```
+
+Tools flagged `DESTRUCTIVE` in the listing are the gated ones.
+
 ## Development
 
 ```bash
