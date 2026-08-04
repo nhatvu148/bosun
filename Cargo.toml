@@ -2,7 +2,7 @@
 name = "bosun"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Engine-agnostic, agent-ergonomic Docker MCP server with token-bounded I/O"
 authors = ["Nhat-Vu <nhatvu148@gmail.com>"]
 license = "MIT OR Apache-2.0"
