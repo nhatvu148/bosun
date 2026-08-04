@@ -88,7 +88,7 @@ With an explicit socket and debug logging:
 }
 ```
 
-Then `/mcp` in Claude Code should list bosun with 17 tools.
+Then `/mcp` in Claude Code should list bosun with 18 tools.
 
 See [docs/prompts.md](docs/prompts.md) for things to ask it, grouped by what each one
 exercises — including a set for attacking the write-safety gate.
@@ -117,8 +117,11 @@ exercises — including a set for attacking the write-safety gate.
 | `compose_up` | safe; build/pull output collapsed |
 | `container_rm` | **destructive — gated** |
 | `compose_down` (with `volumes=true`) | **destructive — gated** |
+| `container_exec` | **destructive — gated** |
 
-`container_exec` is deliberately **not** in v1.
+`container_exec` was originally excluded from v1. It was added after real use showed the
+omission didn't prevent exec — it pushed the agent to `Bash(docker exec …)` instead, which
+is unbounded, unaudited and ungated. See [Why exec exists](#why-exec-exists).
 
 ### Diagnostics — deterministic
 
@@ -198,6 +201,49 @@ The classification is enforced, not documented: a test walks the live tool route
 fails if any tool lacks a `safety::risk_of` entry, or if a destructive one doesn't
 declare `destructive_hint` and expose both gates in its schema. A new destructive tool
 cannot ship un-gated by accident.
+
+### Why exec exists
+
+`container_exec` was excluded from v1 on the reasoning that arbitrary code execution is
+too sharp an edge to hand an agent. The first real debugging session disproved it: the
+agent needed to know whether an image shipped `curl`, found no Bosun tool for it, and ran
+
+```
+Bash(docker exec <container> sh -c 'command -v python3 wget nc ...')
+```
+
+**Omitting exec did not prevent exec.** It routed it somewhere Bosun couldn't bound the
+output, couldn't audit the call, and couldn't gate it. The exclusion made the tool surface
+smaller without making anything safer.
+
+So exec is here, and it earns its place by being the *stricter* path: argv-only (never a
+shell string, so nothing is interpreted by a shell Bosun doesn't control), output capped
+at 8 000 chars per stream, a timeout that defaults to 30s and hard-caps at 300s, and
+`Destructive` classification so every call passes §6. HANDOFF §6 anticipated this —
+it listed "maybe `exec`" among the destructive tools from the start.
+
+---
+
+## What it actually saves
+
+Measured against the equivalent raw commands on a live container, in tokens:
+
+| Call | Raw CLI | Bosun | |
+|---|---|---|---|
+| `container_logs` (tail 200) | ~7 780 | ~1 520 | **5.1× less** |
+| `inspect_container` | ~3 020 | ~570 | **5.3× less** |
+| `container_stats` | ~28 | ~98 | 3.5× *more* |
+| `list_containers` | ~368 | ~554 | 1.5× *more* |
+
+Worth being straight about: the win is concentrated entirely in `container_logs` and
+`inspect_container`, the two calls that dominate a real debugging session. On the small
+reads Bosun costs *more* than a `docker ... --format table`, because a compact table is
+compact by being lossy — it drops block IO, PIDs, throttling, health and limits — and
+because JSON with field names is inherently wordier than columns.
+
+That's the correct trade for a tool an agent parses rather than a human skims, but it
+means "Bosun always saves tokens" would be false. Across a full session the net came out
+around 3–7× fewer tokens, all of it from logs and inspect.
 
 ---
 

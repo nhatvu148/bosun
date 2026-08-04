@@ -183,13 +183,19 @@ impl BosunServer {
         let omitted = matched.saturating_sub(limit);
         rows.truncate(limit);
 
-        let payload = serde_json::json!({
-            "containers": rows,
-            "matched": matched,
-            "returned": matched.min(limit),
-            "omitted": (omitted > 0).then_some(omitted),
-            "showing": if params.all { "all containers" } else { "running containers only (pass all=true for stopped)" },
-        });
+        // Counts and hints are only emitted when they carry information: if
+        // nothing was dropped, "returned: 3, omitted: null" is three facts the
+        // caller can already see by counting the rows.
+        let mut payload = serde_json::json!({ "containers": rows });
+        if omitted > 0 {
+            payload["matched"] = matched.into();
+            payload["returned"] = matched.min(limit).into();
+            payload["omitted"] = omitted.into();
+            payload["note"] = "Row cap reached — narrow with filter, or raise limit.".into();
+        }
+        if !params.all {
+            payload["showing"] = "running only (all=true includes stopped)".into();
+        }
 
         bounded_json(&payload, "list_containers", "Narrow with filter, or lower limit.")
     }
@@ -420,10 +426,12 @@ impl BosunServer {
 
         let (block_read, block_write) = block_io(latest);
 
-        let payload = serde_json::json!({
-            "container": short_id(latest.id.as_deref().unwrap_or(&params.id)),
-            "name": latest.name.as_deref().map(strip_leading_slash),
-            "read_at": latest.read.as_ref().map(ToString::to_string),
+        // Byte counts appear once each. Memory keeps its raw number because
+        // "is it near the limit" is a numeric question; network and block IO are
+        // cumulative counters where the magnitude is the whole answer, so the
+        // human rendering alone carries it.
+        let mut payload = serde_json::json!({
+            "container": strip_leading_slash(latest.name.as_deref().unwrap_or(&params.id)),
             "cpu": {
                 "percent": cpu_percent(latest).map(round2),
                 "online_cpus": latest.cpu_stats.as_ref().and_then(|c| c.online_cpus),
@@ -434,31 +442,22 @@ impl BosunServer {
                     .and_then(|t| t.throttled_periods),
             },
             "memory": {
-                "used_bytes": mem_usage,
                 "used": mem_usage.map(human_bytes),
-                "limit_bytes": mem_limit,
+                "used_bytes": mem_usage,
                 "limit": mem_limit.map(human_bytes),
                 "percent": mem_percent.map(round2),
             },
-            "network": {
-                "rx_bytes": rx,
-                "rx": human_bytes(rx),
-                "tx_bytes": tx,
-                "tx": human_bytes(tx),
-            },
-            "block_io": {
-                "read_bytes": block_read,
-                "read": human_bytes(block_read),
-                "write_bytes": block_write,
-                "write": human_bytes(block_write),
-            },
+            "network": { "rx": human_bytes(rx), "tx": human_bytes(tx) },
+            "block_io": { "read": human_bytes(block_read), "write": human_bytes(block_write) },
             "pids": latest.pids_stats.as_ref().and_then(|p| p.current),
-            "note": if samples.len() < 2 {
-                "Only one sample was available, so cpu.percent could not be computed."
-            } else {
-                "Snapshot from two samples ~1s apart. Not a stream — call again for a fresh reading."
-            },
         });
+
+        // Only say something when there is something to say. "This is a snapshot"
+        // on every single call is boilerplate the tool description already covers.
+        if samples.len() < 2 {
+            payload["note"] =
+                "Only one sample was available, so cpu.percent could not be computed.".into();
+        }
 
         bounded_json(&payload, "container_stats", "Unexpectedly large — report this.")
     }
@@ -526,6 +525,11 @@ impl BosunServer {
 }
 
 /// `docker ps`-style port rendering from a container summary row.
+///
+/// A published port almost always appears twice — once bound on `0.0.0.0` and
+/// once on `::` — which is one fact rendered as two lines. We collapse the pair
+/// to `8080->80/tcp`, and only name a host IP when it is a *specific* interface,
+/// because that is the case where the address actually carries information.
 fn summarize_ports(c: &bollard::models::ContainerSummary) -> Vec<String> {
     let mut out: Vec<String> = c
         .ports
@@ -538,8 +542,11 @@ fn summarize_ports(c: &bollard::models::ContainerSummary) -> Vec<String> {
                 .map(|t| format!("{t:?}").to_lowercase())
                 .unwrap_or_else(|| "tcp".into());
             match p.public_port {
+                Some(public) if is_wildcard_bind(p.ip.as_deref()) => {
+                    format!("{public}->{}/{proto}", p.private_port)
+                }
                 Some(public) => {
-                    let ip = p.ip.as_deref().unwrap_or("0.0.0.0");
+                    let ip = p.ip.as_deref().unwrap_or_default();
                     format!("{ip}:{public}->{}/{proto}", p.private_port)
                 }
                 None => format!("{}/{proto}", p.private_port),
@@ -547,8 +554,14 @@ fn summarize_ports(c: &bollard::models::ContainerSummary) -> Vec<String> {
         })
         .collect();
     out.sort();
+    // Dedup now collapses the IPv4/IPv6 pair, since both rendered identically.
     out.dedup();
     out
+}
+
+/// `0.0.0.0`, `::`, and absent all mean "every interface".
+fn is_wildcard_bind(ip: Option<&str>) -> bool {
+    matches!(ip, None | Some("") | Some("0.0.0.0") | Some("::"))
 }
 
 /// CPU percentage the way `docker stats` computes it: the container's CPU-time
@@ -697,5 +710,66 @@ mod tests {
     #[test]
     fn block_io_defaults_to_zero_when_absent() {
         assert_eq!(block_io(&ContainerStatsResponse::default()), (0, 0));
+    }
+
+    fn port(ip: Option<&str>, public: Option<u16>, private: u16) -> bollard::models::PortSummary {
+        bollard::models::PortSummary {
+            ip: ip.map(str::to_string),
+            public_port: public,
+            private_port: private,
+            typ: Some(bollard::models::PortSummaryTypeEnum::TCP),
+        }
+    }
+
+    fn summary(ports: Vec<bollard::models::PortSummary>) -> bollard::models::ContainerSummary {
+        bollard::models::ContainerSummary {
+            ports: Some(ports),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dual_stack_bindings_collapse_to_one_line() {
+        // Docker reports a published port twice, once on 0.0.0.0 and once on ::.
+        // That is one fact; rendering it as two lines is pure duplication.
+        let rendered = summarize_ports(&summary(vec![
+            port(Some("0.0.0.0"), Some(8001), 8001),
+            port(Some("::"), Some(8001), 8001),
+        ]));
+        assert_eq!(rendered, vec!["8001->8001/tcp"]);
+    }
+
+    #[test]
+    fn a_specific_host_interface_is_still_named() {
+        // Binding to one interface is information the caller needs; only the
+        // wildcard case is noise.
+        let rendered = summarize_ports(&summary(vec![port(Some("127.0.0.1"), Some(5432), 5432)]));
+        assert_eq!(rendered, vec!["127.0.0.1:5432->5432/tcp"]);
+    }
+
+    #[test]
+    fn unpublished_ports_show_only_the_container_port() {
+        let rendered = summarize_ports(&summary(vec![port(None, None, 6379)]));
+        assert_eq!(rendered, vec!["6379/tcp"]);
+    }
+
+    #[test]
+    fn distinct_published_ports_are_all_kept() {
+        let rendered = summarize_ports(&summary(vec![
+            port(Some("0.0.0.0"), Some(8001), 8001),
+            port(Some("::"), Some(8001), 8001),
+            port(Some("0.0.0.0"), Some(9090), 9090),
+        ]));
+        assert_eq!(rendered, vec!["8001->8001/tcp", "9090->9090/tcp"]);
+    }
+
+    #[test]
+    fn every_form_of_wildcard_bind_is_recognized() {
+        assert!(is_wildcard_bind(None));
+        assert!(is_wildcard_bind(Some("")));
+        assert!(is_wildcard_bind(Some("0.0.0.0")));
+        assert!(is_wildcard_bind(Some("::")));
+        assert!(!is_wildcard_bind(Some("127.0.0.1")));
+        assert!(!is_wildcard_bind(Some("192.168.1.5")));
     }
 }

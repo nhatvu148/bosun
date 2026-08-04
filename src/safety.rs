@@ -48,8 +48,9 @@ pub fn risk_of(tool: &str) -> Option<Risk> {
         "container_start" | "container_stop" | "container_restart" | "pull_image"
         | "compose_up" => Risk::Safe,
 
-        // Writes that can destroy data. These must route through `gate`.
-        "container_rm" | "compose_down" => Risk::Destructive,
+        // Writes that can destroy data, plus arbitrary code execution.
+        // These must route through `gate`.
+        "container_rm" | "compose_down" | "container_exec" => Risk::Destructive,
 
         _ => return None,
     };

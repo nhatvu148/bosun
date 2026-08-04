@@ -1,11 +1,24 @@
 //! Action tools (HANDOFF §4 "Actions — guarded", M2).
 //!
-//! Lifecycle verbs are reversible and allowed directly. Removal is destructive
-//! and routed through [`crate::safety`], which requires a `dry_run` preview or a
-//! `confirm` token echoing the target before anything is deleted.
+//! Lifecycle verbs are reversible and allowed directly. Removal and exec are
+//! destructive and routed through [`crate::safety`], which requires a `dry_run`
+//! preview or a `confirm` token echoing the target before anything happens.
 //!
-//! `container_exec` is deliberately absent from v1 (HANDOFF §11).
+//! ## Why `container_exec` exists after all
+//!
+//! HANDOFF §11 leaned toward leaving exec out of v1, and it shipped that way.
+//! First real session, the agent hit the gap and reached for
+//! `Bash(docker exec …)` instead — which is the observation that changes the
+//! calculus. **Omitting exec did not prevent exec.** It pushed the agent to an
+//! unbounded, unaudited, ungated path that Bosun cannot see.
+//!
+//! A gated exec is strictly safer than the fallback the omission was creating,
+//! so it is here: argv-only (never a shell string), output-bounded, timeout-
+//! enforced, and classified `Destructive` so every call goes through §6 — which
+//! is exactly what §6 itself anticipated when it listed "maybe `exec`" among
+//! the destructive tools.
 
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, RemoveContainerOptionsBuilder,
     RestartContainerOptions, StartContainerOptions, StopContainerOptionsBuilder,
@@ -18,13 +31,20 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::bound::bounded_json;
-use crate::bound::project::{short_id, strip_leading_slash};
+use crate::bound::project::{clip, short_id, strip_leading_slash};
 use crate::safety::{self, Authorization, Decision, Guarded};
 use crate::server::BosunServer;
 use crate::tools::{engine_error, tool_error};
 
 /// Default grace period before SIGKILL, matching the Docker CLI.
 const DEFAULT_STOP_TIMEOUT: i32 = 10;
+
+/// Default seconds an exec may run before Bosun stops reading and reports a timeout.
+const DEFAULT_EXEC_TIMEOUT: u64 = 30;
+/// Ceiling on the exec timeout, so a stuck command can't pin the server forever.
+const MAX_EXEC_TIMEOUT: u64 = 300;
+/// Cap on captured exec output per stream. Exec is bounded like every other read.
+const MAX_EXEC_OUTPUT_CHARS: usize = 8_000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContainerIdParams {
@@ -63,6 +83,31 @@ pub struct RemoveContainerParams {
 pub struct PullImageParams {
     /// Image reference, e.g. 'nginx:1.27' or 'ghcr.io/org/app:sha-abc123'.
     pub image: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExecParams {
+    /// Container id or name.
+    pub id: String,
+    /// Command as an argv array, e.g. ["ls", "-la", "/app"]. NOT a shell string —
+    /// nothing here is interpreted by a shell. For shell features (pipes,
+    /// globs, redirection) pass them explicitly: ["sh", "-c", "ls /app | head"].
+    pub cmd: Vec<String>,
+    /// Seconds before the command is abandoned. Default 30, max 300.
+    #[serde(default)]
+    pub timeout: Option<u64>,
+    /// Working directory inside the container.
+    #[serde(default)]
+    pub workdir: Option<String>,
+    /// User to run as, e.g. 'root' or '1000:1000'.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Preview the exact argv that would run, without running it.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Authorization token — must exactly equal the container's name.
+    #[serde(default)]
+    pub confirm: Option<String>,
 }
 
 #[tool_router(router = actions_router, vis = "pub(crate)")]
@@ -355,6 +400,184 @@ impl BosunServer {
         });
         bounded_json(&payload, "pull_image", "Unexpectedly large — report this.")
     }
+
+    /// Run a command inside a container. Destructive — gated per §6.
+    #[tool(
+        name = "container_exec",
+        description = "Run a command inside a running container and capture bounded stdout/stderr. \
+                       DESTRUCTIVE and GATED: arbitrary code execution, so it does nothing unless you pass \
+                       dry_run=true (shows the exact argv) or confirm=\"<container-name>\". \
+                       cmd is an ARGV ARRAY, never a shell string — [\"ls\",\"-la\"], not \"ls -la\". For \
+                       pipes or globs be explicit: [\"sh\",\"-c\",\"ls /app | head\"]. Output is capped at \
+                       8000 chars per stream and the command is killed after `timeout` seconds (default 30). \
+                       Prefer this over shelling out to `docker exec`, which is unbounded and unaudited.",
+        annotations(title = "Exec in container", destructive_hint = true)
+    )]
+    pub async fn container_exec(
+        &self,
+        Parameters(params): Parameters<ExecParams>,
+    ) -> CallToolResult {
+        if params.cmd.is_empty() {
+            return tool_error(
+                "cmd must not be empty. Pass an argv array, e.g. [\"sh\", \"-c\", \"ls /app\"].",
+            );
+        }
+
+        let inspect = match self
+            .engine()
+            .docker()
+            .inspect_container(&params.id, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(i) => i,
+            Err(e) => return engine_error("container_exec failed", &params.id, e),
+        };
+
+        let name = strip_leading_slash(inspect.name.as_deref().unwrap_or(&params.id));
+
+        if !inspect.state.as_ref().and_then(|s| s.running).unwrap_or(false) {
+            return tool_error(format!(
+                "container '{name}' is not running, so nothing can exec inside it. \
+                 Start it first with container_start."
+            ));
+        }
+
+        let timeout = params.timeout.unwrap_or(DEFAULT_EXEC_TIMEOUT).clamp(1, MAX_EXEC_TIMEOUT);
+        let rendered = render_argv(&params.cmd);
+
+        let mut consequences = vec![
+            format!("'{rendered}' would run inside container '{name}'"),
+            "it runs with the container's own privileges and can modify or delete data there".into(),
+            format!("it would be abandoned after {timeout}s if it has not finished"),
+        ];
+        if let Some(user) = &params.user {
+            consequences.push(format!("it would run as user '{user}'"));
+        }
+        if let Some(dir) = &params.workdir {
+            consequences.push(format!("working directory would be '{dir}'"));
+        }
+
+        let guarded = Guarded {
+            tool: "container_exec",
+            target: &name,
+            effect: format!("execute '{rendered}' inside container '{name}'"),
+            consequences,
+        };
+
+        match safety::gate(
+            &guarded,
+            Authorization {
+                dry_run: params.dry_run,
+                confirm: params.confirm.as_deref(),
+            },
+        ) {
+            Decision::DryRun(report) => {
+                return bounded_json(&report, "container_exec", "Unexpectedly large — report this.");
+            }
+            Decision::Refused(refusal) => {
+                return bounded_json(&refusal, "container_exec", "Unexpectedly large — report this.");
+            }
+            Decision::Authorized => {}
+        }
+
+        let config = CreateExecOptions {
+            cmd: Some(params.cmd.clone()),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            // No stdin and no TTY: this is a capture, not a session. A TTY would
+            // also merge stderr into stdout and inject control codes.
+            attach_stdin: Some(false),
+            tty: Some(false),
+            working_dir: params.workdir.clone(),
+            user: params.user.clone(),
+            ..Default::default()
+        };
+
+        let exec = match self.engine().docker().create_exec(&params.id, config).await {
+            Ok(e) => e,
+            Err(e) => return engine_error("container_exec failed", &params.id, e),
+        };
+
+        let started = self
+            .engine()
+            .docker()
+            .start_exec(&exec.id, Some(StartExecOptions {
+                detach: false,
+                tty: false,
+                output_capacity: None,
+            }))
+            .await;
+
+        let StartExecResults::Attached { mut output, .. } = (match started {
+            Ok(s) => s,
+            Err(e) => return engine_error("container_exec failed", &params.id, e),
+        }) else {
+            return tool_error("exec started detached unexpectedly; no output was captured");
+        };
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+
+        // Drain under a wall-clock deadline. On timeout we keep whatever was
+        // captured — partial output from a hung command is usually the most
+        // useful thing we have.
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(timeout), async {
+            while let Some(chunk) = output.next().await {
+                match chunk {
+                    Ok(bollard::container::LogOutput::StdErr { message }) => {
+                        stderr.push_str(&String::from_utf8_lossy(&message));
+                    }
+                    Ok(other) => stdout.push_str(&String::from_utf8_lossy(other.as_ref())),
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        })
+        .await;
+
+        let timed_out = drained.is_err();
+        if let Ok(Err(e)) = drained {
+            return engine_error("container_exec failed while reading output", &params.id, e);
+        }
+
+        // Exit code is only meaningful once the process has actually finished.
+        let exit_code = if timed_out {
+            None
+        } else {
+            self.engine()
+                .docker()
+                .inspect_exec(&exec.id)
+                .await
+                .ok()
+                .and_then(|i| i.exit_code)
+        };
+
+        safety::audit_completed(
+            "container_exec",
+            &name,
+            &format!("argv={rendered} exit={exit_code:?} timed_out={timed_out}"),
+        );
+
+        let payload = serde_json::json!({
+            "container": name,
+            "command": params.cmd,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "stdout": clip(stdout.trim_end(), MAX_EXEC_OUTPUT_CHARS),
+            "stderr": clip(stderr.trim_end(), MAX_EXEC_OUTPUT_CHARS),
+            "note": if timed_out {
+                format!("Command did not finish within {timeout}s. Output captured so far is included; \
+                         the process may still be running inside the container.")
+            } else {
+                format!("Output capped at {MAX_EXEC_OUTPUT_CHARS} chars per stream.")
+            },
+        });
+        bounded_json(
+            &payload,
+            "container_exec",
+            "Output too large — narrow the command, or pipe it through head inside the container.",
+        )
+    }
 }
 
 impl BosunServer {
@@ -400,6 +623,25 @@ impl BosunServer {
         });
         bounded_json(&payload, "container_action", "Unexpectedly large — report this.")
     }
+}
+
+/// Render an argv vector for human review in a gate preview.
+///
+/// Quoting is for *display only* — the vector itself is what gets executed, and
+/// it never passes through a shell. Arguments containing whitespace or quotes are
+/// shown quoted so the reader can see the word boundaries the daemon will see.
+fn render_argv(cmd: &[String]) -> String {
+    cmd.iter()
+        .map(|arg| {
+            if arg.is_empty() || arg.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            {
+                format!("{:?}", arg)
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Anonymous volumes are the ones Docker names with a 64-char hex id. Named

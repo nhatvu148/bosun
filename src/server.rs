@@ -367,14 +367,34 @@ mod tests {
         }
     }
 
-    /// container_exec is deliberately out of v1 (HANDOFF §11). This test is the
-    /// record of that decision — if exec is ever added, it should be a conscious
-    /// choice that also updates the risk classification.
+    /// `container_exec` was originally excluded per HANDOFF §11, then added once
+    /// real use showed the omission just pushed agents to `Bash(docker exec …)` —
+    /// unbounded, unaudited and ungated. It only earns its place while it stays
+    /// gated, so that is what this asserts. If exec is ever reclassified `Safe`,
+    /// this test should fail and the reasoning above should be revisited.
     #[test]
-    fn container_exec_is_not_exposed_in_v1() {
-        assert!(
-            !all_tools().iter().any(|t| t.name.contains("exec")),
-            "container_exec was deliberately excluded from v1"
+    fn exec_is_exposed_but_only_because_it_is_gated() {
+        let exec = all_tools()
+            .into_iter()
+            .find(|t| t.name == "container_exec")
+            .expect("container_exec should be registered");
+
+        assert_eq!(
+            risk_of("container_exec"),
+            Some(Risk::Destructive),
+            "exec is arbitrary code execution and must stay gated"
+        );
+        assert_eq!(
+            exec.annotations.as_ref().and_then(|a| a.destructive_hint),
+            Some(true)
+        );
+
+        // argv-only is the other half of the safety story: a shell string would
+        // mean Bosun hands user input to a shell it does not control.
+        let cmd = exec.input_schema["properties"]["cmd"].clone();
+        assert_eq!(
+            cmd["type"], "array",
+            "cmd must be an argv array, never a shell string: {cmd}"
         );
     }
 
