@@ -63,8 +63,23 @@ pub fn infer_level(line: &str) -> Level {
     let lower = line.to_ascii_lowercase();
 
     // Bare-word markers that appear in structured and unstructured logs alike.
-    const FATAL: [&str; 6] = ["fatal", "panic:", "critical", "emerg", "segfault", "core dumped"];
-    const ERROR: [&str; 7] = ["error", "err!", "exception", "traceback", "failed", "failure", "[e]"];
+    const FATAL: [&str; 6] = [
+        "fatal",
+        "panic:",
+        "critical",
+        "emerg",
+        "segfault",
+        "core dumped",
+    ];
+    const ERROR: [&str; 7] = [
+        "error",
+        "err!",
+        "exception",
+        "traceback",
+        "failed",
+        "failure",
+        "[e]",
+    ];
     const WARN: [&str; 4] = ["warn", "deprecat", "[w]", "retrying"];
     const DEBUG: [&str; 3] = ["debug", "[d]", "trace"];
 
@@ -269,9 +284,9 @@ fn is_timestamp_like(s: &str) -> bool {
     }
     let has_date = s.matches('-').count() >= 2 || s.matches('/').count() >= 2;
     let has_time = s.matches(':').count() >= 2;
-    let only_ts_chars = s
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, '-' | '/' | ':' | '.' | 'T' | 't' | 'Z' | 'z' | '+'));
+    let only_ts_chars = s.chars().all(|c| {
+        c.is_ascii_digit() || matches!(c, '-' | '/' | ':' | '.' | 'T' | 't' | 'Z' | 'z' | '+')
+    });
     only_ts_chars && (has_date || has_time)
 }
 
@@ -463,7 +478,10 @@ mod tests {
         let a = normalize("GET http://api.internal:8080/v1/users took 12ms");
         let b = normalize("GET http://api.internal:9090/v1/users took 340ms");
         assert_eq!(a, b);
-        assert!(a.contains("http://api.internal:<NUM>/v<NUM>/users"), "got: {a}");
+        assert!(
+            a.contains("http://api.internal:<NUM>/v<NUM>/users"),
+            "got: {a}"
+        );
     }
 
     #[test]
@@ -479,7 +497,9 @@ mod tests {
 
     #[test]
     fn errors_outrank_chatty_info_lines_when_capped() {
-        let mut lines: Vec<LogLine> = (0..100).map(|i| line(&format!("serving request {i}"))).collect();
+        let mut lines: Vec<LogLine> = (0..100)
+            .map(|i| line(&format!("serving request {i}")))
+            .collect();
         lines.push(line("ERROR out of memory"));
 
         // Only room for one cluster: the error must be the one that survives,
@@ -506,15 +526,24 @@ mod tests {
         ];
         let summary = cluster(&lines, 10);
         assert_eq!(summary.clusters[0].count, 2);
-        assert_eq!(summary.clusters[0].first_seen.as_deref(), Some("2026-08-04T10:00:00Z"));
-        assert_eq!(summary.clusters[0].last_seen.as_deref(), Some("2026-08-04T10:05:00Z"));
+        assert_eq!(
+            summary.clusters[0].first_seen.as_deref(),
+            Some("2026-08-04T10:00:00Z")
+        );
+        assert_eq!(
+            summary.clusters[0].last_seen.as_deref(),
+            Some("2026-08-04T10:05:00Z")
+        );
     }
 
     #[test]
     fn rfc3339_prefix_is_lifted_off_the_message() {
         let parsed = parse_lines("2026-08-04T10:22:33.123456789Z hello world\n", false);
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].timestamp.as_deref(), Some("2026-08-04T10:22:33.123456789Z"));
+        assert_eq!(
+            parsed[0].timestamp.as_deref(),
+            Some("2026-08-04T10:22:33.123456789Z")
+        );
         assert_eq!(parsed[0].text, "hello world");
     }
 

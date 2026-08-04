@@ -6,7 +6,8 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{
     CallToolResult, ErrorData, Implementation, ListResourceTemplatesResult, ListResourcesResult,
     PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerInfo,
+    ReadResourceResult, Resource, ResourceContents, ResourceTemplate, ServerCapabilities,
+    ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, tool, tool_handler, tool_router};
@@ -80,10 +81,7 @@ impl BosunServer {
                        talking to the daemon you think it is.",
         annotations(title = "Bosun engine info", read_only_hint = true)
     )]
-    pub async fn bosun_info(
-        &self,
-        context: RequestContext<RoleServer>,
-    ) -> CallToolResult {
+    pub async fn bosun_info(&self, context: RequestContext<RoleServer>) -> CallToolResult {
         let engine = self.engine();
 
         // Counts are a liveness check as much as a statistic: if this errors,
@@ -302,7 +300,10 @@ impl BosunServer {
         let inspect = self
             .engine()
             .docker()
-            .inspect_container(id, None::<bollard::query_parameters::InspectContainerOptions>)
+            .inspect_container(
+                id,
+                None::<bollard::query_parameters::InspectContainerOptions>,
+            )
             .await
             .map_err(|e| {
                 ErrorData::resource_not_found(format!("inspect '{id}' failed: {e}"), None)
@@ -367,9 +368,10 @@ mod tests {
                 tool.name
             );
 
-            let properties = tool.input_schema.get("properties").unwrap_or_else(|| {
-                panic!("{} has no schema properties", tool.name)
-            });
+            let properties = tool
+                .input_schema
+                .get("properties")
+                .unwrap_or_else(|| panic!("{} has no schema properties", tool.name));
             for gate in ["dry_run", "confirm"] {
                 assert!(
                     properties.get(gate).is_some(),
@@ -385,7 +387,12 @@ mod tests {
     /// anything.
     #[test]
     fn read_tools_are_marked_read_only() {
-        for name in ["list_containers", "inspect_container", "container_logs", "diagnose_container"] {
+        for name in [
+            "list_containers",
+            "inspect_container",
+            "container_logs",
+            "diagnose_container",
+        ] {
             let tool = all_tools()
                 .into_iter()
                 .find(|t| t.name == name)
@@ -450,7 +457,13 @@ mod tests {
             .find(|t| t.name == "container_logs")
             .expect("container_logs is registered");
         let description = logs.description.unwrap();
-        assert!(description.contains("200"), "container_logs must state its default tail");
-        assert!(description.contains("raw=true"), "container_logs must name its escape hatch");
+        assert!(
+            description.contains("200"),
+            "container_logs must state its default tail"
+        );
+        assert!(
+            description.contains("raw=true"),
+            "container_logs must name its escape hatch"
+        );
     }
 }

@@ -201,7 +201,11 @@ impl BosunServer {
             payload["showing"] = "running only (all=true includes stopped)".into();
         }
 
-        bounded_json(&payload, "list_containers", "Narrow with filter, or lower limit.")
+        bounded_json(
+            &payload,
+            "list_containers",
+            "Narrow with filter, or lower limit.",
+        )
     }
 
     /// Inspect one container, projected to the fields that matter.
@@ -407,9 +411,11 @@ impl BosunServer {
 
         if ids.len() == 1 {
             return match self.stats_one(&ids[0]).await {
-                Ok(value) => {
-                    bounded_json(&value, "container_stats", "Unexpectedly large — report this.")
-                }
+                Ok(value) => bounded_json(
+                    &value,
+                    "container_stats",
+                    "Unexpectedly large — report this.",
+                ),
                 Err(e) => tool_error(e),
             };
         }
@@ -443,7 +449,10 @@ impl BosunServer {
     /// concurrently — each call spends ~1s waiting for its second sample.
     async fn stats_one(&self, id: &str) -> Result<serde_json::Value, String> {
         // stream=true gives consecutive samples; we take exactly two and stop.
-        let options = StatsOptionsBuilder::new().stream(true).one_shot(false).build();
+        let options = StatsOptionsBuilder::new()
+            .stream(true)
+            .one_shot(false)
+            .build();
         let mut stream = self.engine().docker().stats(id, Some(options));
 
         let mut samples = Vec::with_capacity(2);
@@ -533,7 +542,12 @@ impl BosunServer {
             builder = builder.filters(&filters);
         }
 
-        let images = match self.engine().docker().list_images(Some(builder.build())).await {
+        let images = match self
+            .engine()
+            .docker()
+            .list_images(Some(builder.build()))
+            .await
+        {
             Ok(i) => i,
             Err(e) => return engine_error("list_images failed", "-", e),
         };
@@ -573,7 +587,11 @@ impl BosunServer {
             "sorted_by": "size, largest first",
         });
 
-        bounded_json(&payload, "list_images", "Lower limit, or pass dangling=true to narrow.")
+        bounded_json(
+            &payload,
+            "list_images",
+            "Lower limit, or pass dangling=true to narrow.",
+        )
     }
 }
 
@@ -678,8 +696,8 @@ fn round2(v: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use bollard::models::{
-        ContainerCpuStats, ContainerCpuUsage, ContainerStatsResponse, ContainerBlkioStatEntry,
-        ContainerBlkioStats,
+        ContainerBlkioStatEntry, ContainerBlkioStats, ContainerCpuStats, ContainerCpuUsage,
+        ContainerStatsResponse,
     };
 
     use super::*;

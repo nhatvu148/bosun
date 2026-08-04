@@ -237,12 +237,14 @@ impl BosunServer {
                         .push("no named volumes belong to this project, so volumes=true deletes nothing extra".into());
                 } else {
                     for v in &volumes {
-                        consequences
-                            .push(format!("named volume '{v}' would be DELETED with all its data (irreversible)"));
+                        consequences.push(format!(
+                            "named volume '{v}' would be DELETED with all its data (irreversible)"
+                        ));
                     }
                 }
             } else {
-                consequences.push("named volumes would be KEPT (volumes=true would delete them)".into());
+                consequences
+                    .push("named volumes would be KEPT (volumes=true would delete them)".into());
             }
 
             let guarded = Guarded {
@@ -300,7 +302,11 @@ impl BosunServer {
             "exit_code": output.code,
             "summary": summarize_compose_output(&output),
         });
-        bounded_json(&payload, "compose_down", "Unexpectedly large — report this.")
+        bounded_json(
+            &payload,
+            "compose_down",
+            "Unexpectedly large — report this.",
+        )
     }
 }
 
@@ -468,22 +474,21 @@ async fn run_compose(args: &[String], working_dir: &str) -> Result<CommandOutput
         .kill_on_drop(true)
         .output();
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(COMPOSE_TIMEOUT_SECS),
-        child,
-    )
-    .await
-    .map_err(|_| {
-        format!("`docker compose` timed out after {COMPOSE_TIMEOUT_SECS}s. It may still be running.")
-    })?
-    .map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            "the `docker` CLI was not found on PATH. Compose tools need it — \
+    let output = tokio::time::timeout(std::time::Duration::from_secs(COMPOSE_TIMEOUT_SECS), child)
+        .await
+        .map_err(|_| {
+            format!(
+                "`docker compose` timed out after {COMPOSE_TIMEOUT_SECS}s. It may still be running."
+            )
+        })?
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                "the `docker` CLI was not found on PATH. Compose tools need it — \
              the read and container tools do not."
-                .to_string()
-        }
-        _ => format!("failed to run `docker compose`: {e}"),
-    })?;
+                    .to_string()
+            }
+            _ => format!("failed to run `docker compose`: {e}"),
+        })?;
 
     Ok(CommandOutput {
         success: output.status.success(),

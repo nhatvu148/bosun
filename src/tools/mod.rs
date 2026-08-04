@@ -26,7 +26,9 @@ pub fn engine_error(context: &str, id: &str, err: bollard::errors::Error) -> Cal
     let message = match &err {
         bollard::errors::Error::DockerResponseServerError {
             status_code: 404, ..
-        } => format!("{context}: no such container or image '{id}'. It may have been removed — re-run list_containers."),
+        } => format!(
+            "{context}: no such container or image '{id}'. It may have been removed — re-run list_containers."
+        ),
         bollard::errors::Error::DockerResponseServerError {
             status_code: 409,
             message,
@@ -114,7 +116,10 @@ pub async fn resolve_ids(
     } else if let Some(one) = id {
         vec![one]
     } else {
-        return Err("pass either id=\"<name>\" or ids=[\"a\",\"b\"], or ids=[\"*\"] for all containers".into());
+        return Err(
+            "pass either id=\"<name>\" or ids=[\"a\",\"b\"], or ids=[\"*\"] for all containers"
+                .into(),
+        );
     };
 
     if !requested.contains(&"*") {
@@ -163,15 +168,17 @@ pub fn parse_since(since: &str, now: i64) -> Result<i64, String> {
         Some('d') => (&s[..s.len() - 1], 86_400),
         // No suffix: treat as an absolute unix timestamp.
         _ => {
-            return s
-                .parse::<i64>()
-                .map_err(|_| format!("could not parse since='{s}'. Use '30s', '5m', '2h', '3d', or a unix timestamp."));
+            return s.parse::<i64>().map_err(|_| {
+                format!(
+                    "could not parse since='{s}'. Use '30s', '5m', '2h', '3d', or a unix timestamp."
+                )
+            });
         }
     };
 
-    let n: i64 = value
-        .parse()
-        .map_err(|_| format!("could not parse since='{s}'. Use '30s', '5m', '2h', '3d', or a unix timestamp."))?;
+    let n: i64 = value.parse().map_err(|_| {
+        format!("could not parse since='{s}'. Use '30s', '5m', '2h', '3d', or a unix timestamp.")
+    })?;
 
     Ok(now.saturating_sub(n.saturating_mul(multiplier)))
 }
@@ -198,7 +205,10 @@ mod tests {
     #[test]
     fn garbage_is_rejected_with_a_usable_message() {
         let err = parse_since("yesterday", NOW).unwrap_err();
-        assert!(err.contains("30s"), "message should show the accepted forms: {err}");
+        assert!(
+            err.contains("30s"),
+            "message should show the accepted forms: {err}"
+        );
         assert!(parse_since("", NOW).is_err());
         assert!(parse_since("abcm", NOW).is_err());
     }

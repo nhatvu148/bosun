@@ -230,15 +230,11 @@ impl BosunServer {
         &self,
         Parameters(params): Parameters<WhyComposeFailingParams>,
     ) -> CallToolResult {
-        let containers = match crate::tools::compose::project_containers(
-            self.engine(),
-            &params.project,
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => return tool_error(e),
-        };
+        let containers =
+            match crate::tools::compose::project_containers(self.engine(), &params.project).await {
+                Ok(c) => c,
+                Err(e) => return tool_error(e),
+            };
 
         if containers.is_empty() {
             return tool_error(format!(
@@ -273,9 +269,10 @@ impl BosunServer {
 
             for port in summary.ports.as_deref().unwrap_or_default() {
                 if let Some(public) = port.public_port {
-                    let proto = port.typ.as_ref().map_or("tcp".into(), |t| {
-                        format!("{t:?}").to_lowercase()
-                    });
+                    let proto = port
+                        .typ
+                        .as_ref()
+                        .map_or("tcp".into(), |t| format!("{t:?}").to_lowercase());
                     all_ports.push((format!("{public}/{proto}"), service.clone()));
                 }
             }
@@ -426,7 +423,10 @@ fn uptime_secs(started_at: Option<&str>, now: i64) -> Option<i64> {
 
 /// The diagnostic core. Pure over its inputs, so it is directly testable
 /// against fixtures without a daemon.
-fn diagnose(inspect: &bollard::models::ContainerInspectResponse, clusters: &[Cluster]) -> Diagnosis {
+fn diagnose(
+    inspect: &bollard::models::ContainerInspectResponse,
+    clusters: &[Cluster],
+) -> Diagnosis {
     diagnose_at(inspect, clusters, crate::bound::now_epoch_secs())
 }
 
@@ -444,7 +444,9 @@ fn diagnose_at(
     let oom_killed = state.and_then(|s| s.oom_killed).unwrap_or(false);
     let exit_code = state.and_then(|s| s.exit_code).unwrap_or(0);
     let restart_count = inspect.restart_count.unwrap_or(0);
-    let daemon_error = state.and_then(|s| s.error.clone()).filter(|e| !e.is_empty());
+    let daemon_error = state
+        .and_then(|s| s.error.clone())
+        .filter(|e| !e.is_empty());
 
     let health = state.and_then(|s| s.health.as_ref());
     let health_status = health
@@ -499,19 +501,28 @@ fn diagnose_at(
             "Raise the container's memory limit (docker run -m / compose deploy.resources.limits.memory)"
                 .into(),
         );
-        actions.push("Call container_stats while it runs to see how close it gets to the limit".into());
+        actions.push(
+            "Call container_stats while it runs to see how close it gets to the limit".into(),
+        );
         actions.push("Investigate the workload for a memory leak or an unbounded buffer".into());
         (
             Verdict::Failing,
-            Some("Killed by the kernel OOM killer — the process exceeded its memory limit.".to_string()),
+            Some(
+                "Killed by the kernel OOM killer — the process exceeded its memory limit."
+                    .to_string(),
+            ),
         )
     } else if crash_looping {
         actions.push(format!(
             "Call container_logs(id, level='error') — the container restarted {restart_count} times, \
              so the same failure is likely repeating"
         ));
-        actions.push(format!("Call explain_exit_code({exit_code}) for what that code means"));
-        actions.push("Check the restart policy — 'always' will mask a failure that never resolves".into());
+        actions.push(format!(
+            "Call explain_exit_code({exit_code}) for what that code means"
+        ));
+        actions.push(
+            "Check the restart policy — 'always' will mask a failure that never resolves".into(),
+        );
         (
             Verdict::Failing,
             Some(format!(
@@ -524,7 +535,9 @@ fn diagnose_at(
         )
     } else if !running && exit_code != 0 {
         let decoded = explain_exit_code(exit_code);
-        actions.push(format!("Call explain_exit_code({exit_code}) for the full decode"));
+        actions.push(format!(
+            "Call explain_exit_code({exit_code}) for the full decode"
+        ));
         actions.push("Call container_logs(id, level='error') for the failure itself".into());
         if let Some(err) = &daemon_error {
             actions.push(format!("The daemon reported: {err}"));
@@ -542,8 +555,12 @@ fn diagnose_at(
             None,
         )
     } else if health_status.as_deref() == Some("unhealthy") {
-        actions.push("Call inspect_container — state.health.recent_probes holds the probe output".into());
-        actions.push("Verify the healthcheck command itself is correct and its timeout is realistic".into());
+        actions.push(
+            "Call inspect_container — state.health.recent_probes holds the probe output".into(),
+        );
+        actions.push(
+            "Verify the healthcheck command itself is correct and its timeout is realistic".into(),
+        );
         actions.push("Check whether a dependency the probe reaches is itself down".into());
         (
             Verdict::Degraded,
@@ -552,7 +569,8 @@ fn diagnose_at(
             )),
         )
     } else if health_status.as_deref() == Some("starting") {
-        actions.push("Wait for the healthcheck's start period to elapse, then diagnose again".into());
+        actions
+            .push("Wait for the healthcheck's start period to elapse, then diagnose again".into());
         (
             Verdict::Unknown,
             Some("Running, but still inside its healthcheck start period.".to_string()),
@@ -640,7 +658,9 @@ pub fn explain_exit_code(code: i64) -> ExitCodeExplanation {
             "Success — the process exited cleanly.",
             None,
             vec!["The container finished its work, or was stopped deliberately."],
-            vec!["Nothing to investigate. If you expected it to keep running, check the entrypoint — a foreground process may have daemonized."],
+            vec![
+                "Nothing to investigate. If you expected it to keep running, check the entrypoint — a foreground process may have daemonized.",
+            ],
         ),
         1 => (
             "Generic application error — the process itself chose to fail.",
@@ -658,7 +678,10 @@ pub fn explain_exit_code(code: i64) -> ExitCodeExplanation {
         125 => (
             "The Docker daemon itself failed — the container never started.",
             None,
-            vec!["Invalid `docker run` flags", "A malformed option in the container config"],
+            vec![
+                "Invalid `docker run` flags",
+                "A malformed option in the container config",
+            ],
             vec!["Check the run/compose invocation, not the application"],
         ),
         126 => (
@@ -742,9 +765,9 @@ pub fn explain_exit_code(code: i64) -> ExitCodeExplanation {
                     "Terminated by signal {signal_num} (exit codes above 128 encode 128 + signal number)."
                 ),
                 signal: Some(format!("signal {signal_num}")),
-                likely_causes: vec![
-                    format!("The process received signal {signal_num} and did not handle it"),
-                ],
+                likely_causes: vec![format!(
+                    "The process received signal {signal_num} and did not handle it"
+                )],
                 what_to_check: vec![
                     "container_logs for what the process was doing when it died".into(),
                     "inspect_container — State.Error may name the source".into(),
@@ -833,11 +856,7 @@ fn project_findings(services: &[Diagnosis], published_ports: &[(String, String)]
 
     let oom: Vec<&str> = services
         .iter()
-        .filter(|d| {
-            d.evidence
-                .iter()
-                .any(|e| e.contains("oom_killed=true"))
-        })
+        .filter(|d| d.evidence.iter().any(|e| e.contains("oom_killed=true")))
         .map(|d| d.container.as_str())
         .collect();
     if !oom.is_empty() {
@@ -886,7 +905,11 @@ mod tests {
         assert_eq!(d.status, Verdict::Failing);
         assert!(d.likely_cause.as_ref().unwrap().contains("OOM"));
         assert!(d.evidence.iter().any(|e| e.contains("oom_killed=true")));
-        assert!(d.suggested_actions.iter().any(|a| a.contains("memory limit")));
+        assert!(
+            d.suggested_actions
+                .iter()
+                .any(|a| a.contains("memory limit"))
+        );
     }
 
     /// The gap this closes: sampling a crash-looping container in the instant it
@@ -942,7 +965,12 @@ mod tests {
         );
 
         assert_eq!(d.status, Verdict::Healthy);
-        assert!(d.likely_cause.as_ref().unwrap().contains("restarted 9 time"));
+        assert!(
+            d.likely_cause
+                .as_ref()
+                .unwrap()
+                .contains("restarted 9 time")
+        );
     }
 
     #[test]
@@ -961,7 +989,11 @@ mod tests {
             0,
         );
         assert_eq!(d.status, Verdict::Failing);
-        assert!(d.evidence.iter().any(|e| e.contains("state.restarting=true")));
+        assert!(
+            d.evidence
+                .iter()
+                .any(|e| e.contains("state.restarting=true"))
+        );
     }
 
     #[test]
@@ -1075,10 +1107,19 @@ mod tests {
     fn repeated_errors_degrade_an_otherwise_healthy_container() {
         let d = diagnose(
             &container(running(), 0),
-            &[error_cluster("ERROR connection refused to 10.0.0.5", 42, Level::Error)],
+            &[error_cluster(
+                "ERROR connection refused to 10.0.0.5",
+                42,
+                Level::Error,
+            )],
         );
         assert_eq!(d.status, Verdict::Degraded);
-        assert!(d.likely_cause.as_ref().unwrap().contains("connection refused"));
+        assert!(
+            d.likely_cause
+                .as_ref()
+                .unwrap()
+                .contains("connection refused")
+        );
         assert_eq!(d.log_signals.len(), 1);
     }
 
@@ -1090,7 +1131,11 @@ mod tests {
     fn a_single_stray_error_does_not_demote_a_healthy_container() {
         let d = diagnose(
             &container(running(), 0),
-            &[error_cluster("ERROR:  canceling autovacuum task", 1, Level::Error)],
+            &[error_cluster(
+                "ERROR:  canceling autovacuum task",
+                1,
+                Level::Error,
+            )],
         );
         assert_eq!(d.status, Verdict::Healthy);
         assert!(d.likely_cause.is_none());
@@ -1105,7 +1150,11 @@ mod tests {
     #[test]
     fn errors_that_stopped_hours_ago_are_history_not_a_live_fault() {
         const NOW: i64 = 1_800_000_000;
-        let mut cluster = error_cluster("ERROR relation \"ocr_usage\" does not exist", 13, Level::Error);
+        let mut cluster = error_cluster(
+            "ERROR relation \"ocr_usage\" does not exist",
+            13,
+            Level::Error,
+        );
         cluster.last_seen = Some(
             chrono::DateTime::from_timestamp(NOW - 20 * 3600, 0)
                 .unwrap()
@@ -1226,8 +1275,14 @@ mod tests {
         assert!(explain_exit_code(0).meaning.contains("Success"));
         assert!(explain_exit_code(126).meaning.contains("not executable"));
         assert!(explain_exit_code(127).meaning.contains("not found"));
-        assert_eq!(explain_exit_code(139).signal.as_deref(), Some("SIGSEGV (11)"));
-        assert_eq!(explain_exit_code(143).signal.as_deref(), Some("SIGTERM (15)"));
+        assert_eq!(
+            explain_exit_code(139).signal.as_deref(),
+            Some("SIGSEGV (11)")
+        );
+        assert_eq!(
+            explain_exit_code(143).signal.as_deref(),
+            Some("SIGTERM (15)")
+        );
     }
 
     #[test]
@@ -1295,7 +1350,15 @@ mod tests {
             make("web", Verdict::Healthy),
         ];
         let findings = project_findings(&services, &[]);
-        assert!(findings.iter().any(|f| f.contains("failing") && f.contains("db")));
-        assert!(findings.iter().any(|f| f.contains("degraded") && f.contains("api")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("failing") && f.contains("db"))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("degraded") && f.contains("api"))
+        );
     }
 }

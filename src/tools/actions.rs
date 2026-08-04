@@ -117,7 +117,11 @@ impl BosunServer {
         name = "container_start",
         description = "Start a stopped container. Low-risk and reversible — no confirmation required. \
                        Returns the container's state after starting.",
-        annotations(title = "Start container", destructive_hint = false, idempotent_hint = true)
+        annotations(
+            title = "Start container",
+            destructive_hint = false,
+            idempotent_hint = true
+        )
     )]
     pub async fn container_start(
         &self,
@@ -141,7 +145,11 @@ impl BosunServer {
         description = "Stop a running container, waiting `timeout` seconds (default 10) for graceful \
                        shutdown before SIGKILL. Low-risk and reversible — no confirmation required. \
                        Returns the container's state after stopping, including its exit code.",
-        annotations(title = "Stop container", destructive_hint = false, idempotent_hint = true)
+        annotations(
+            title = "Stop container",
+            destructive_hint = false,
+            idempotent_hint = true
+        )
     )]
     pub async fn container_stop(
         &self,
@@ -169,7 +177,11 @@ impl BosunServer {
         description = "Restart a container (stop then start). Low-risk and reversible — no confirmation \
                        required. Note this changes nothing about the container's configuration; to pick up \
                        a new image you must recreate it.",
-        annotations(title = "Restart container", destructive_hint = false, idempotent_hint = true)
+        annotations(
+            title = "Restart container",
+            destructive_hint = false,
+            idempotent_hint = true
+        )
     )]
     pub async fn container_restart(
         &self,
@@ -251,12 +263,14 @@ impl BosunServer {
         if params.volumes {
             if anonymous_volumes.is_empty() {
                 consequences.push(
-                    "no anonymous volumes are attached, so volumes=true removes nothing extra".into(),
+                    "no anonymous volumes are attached, so volumes=true removes nothing extra"
+                        .into(),
                 );
             } else {
                 for v in &anonymous_volumes {
-                    consequences
-                        .push(format!("anonymous volume '{v}' would be DELETED (irreversible)"));
+                    consequences.push(format!(
+                        "anonymous volume '{v}' would be DELETED (irreversible)"
+                    ));
                 }
             }
         } else if !anonymous_volumes.is_empty() {
@@ -271,7 +285,11 @@ impl BosunServer {
             target: &name,
             effect: format!(
                 "remove container '{name}'{}{}",
-                if params.force { " (force-killing it)" } else { "" },
+                if params.force {
+                    " (force-killing it)"
+                } else {
+                    ""
+                },
                 if params.volumes {
                     " and its anonymous volumes"
                 } else {
@@ -319,7 +337,11 @@ impl BosunServer {
             "forced": params.force,
             "volumes_removed": if params.volumes { anonymous_volumes } else { Vec::new() },
         });
-        bounded_json(&payload, "container_rm", "Unexpectedly large — report this.")
+        bounded_json(
+            &payload,
+            "container_rm",
+            "Unexpectedly large — report this.",
+        )
     }
 
     /// Pull an image, collapsing layer progress into one summary.
@@ -432,19 +454,28 @@ impl BosunServer {
 
         let name = strip_leading_slash(inspect.name.as_deref().unwrap_or(&params.id));
 
-        if !inspect.state.as_ref().and_then(|s| s.running).unwrap_or(false) {
+        if !inspect
+            .state
+            .as_ref()
+            .and_then(|s| s.running)
+            .unwrap_or(false)
+        {
             return tool_error(format!(
                 "container '{name}' is not running, so nothing can exec inside it. \
                  Start it first with container_start."
             ));
         }
 
-        let timeout = params.timeout.unwrap_or(DEFAULT_EXEC_TIMEOUT).clamp(1, MAX_EXEC_TIMEOUT);
+        let timeout = params
+            .timeout
+            .unwrap_or(DEFAULT_EXEC_TIMEOUT)
+            .clamp(1, MAX_EXEC_TIMEOUT);
         let rendered = render_argv(&params.cmd);
 
         let mut consequences = vec![
             format!("'{rendered}' would run inside container '{name}'"),
-            "it runs with the container's own privileges and can modify or delete data there".into(),
+            "it runs with the container's own privileges and can modify or delete data there"
+                .into(),
             format!("it would be abandoned after {timeout}s if it has not finished"),
         ];
         if let Some(user) = &params.user {
@@ -493,11 +524,14 @@ impl BosunServer {
         let started = self
             .engine()
             .docker()
-            .start_exec(&exec.id, Some(StartExecOptions {
-                detach: false,
-                tty: false,
-                output_capacity: None,
-            }))
+            .start_exec(
+                &exec.id,
+                Some(StartExecOptions {
+                    detach: false,
+                    tty: false,
+                    output_capacity: None,
+                }),
+            )
             .await;
 
         let StartExecResults::Attached { mut output, .. } = (match started {
@@ -613,7 +647,11 @@ impl BosunServer {
                 .and_then(|h| h.status)
                 .map(|s| format!("{s:?}").to_lowercase()),
         });
-        bounded_json(&payload, "container_action", "Unexpectedly large — report this.")
+        bounded_json(
+            &payload,
+            "container_action",
+            "Unexpectedly large — report this.",
+        )
     }
 }
 
@@ -664,7 +702,10 @@ mod tests {
 
     #[test]
     fn a_bare_tag_is_split_off() {
-        assert_eq!(split_reference("nginx:1.27"), ("nginx".into(), "1.27".into()));
+        assert_eq!(
+            split_reference("nginx:1.27"),
+            ("nginx".into(), "1.27".into())
+        );
     }
 
     #[test]

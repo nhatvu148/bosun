@@ -29,8 +29,7 @@ impl EngineClient {
     pub async fn connect(override_socket: Option<&str>) -> Result<Self, ConnectError> {
         let endpoint = resolve(override_socket)?;
 
-        let docker = if endpoint.address.contains("://")
-            && !endpoint.address.starts_with("unix://")
+        let docker = if endpoint.address.contains("://") && !endpoint.address.starts_with("unix://")
         {
             // tcp:// / ssh:// / npipe:// — let bollard parse the URL itself.
             Docker::connect_with_defaults().map_err(|source| ConnectError::Connect {
@@ -38,13 +37,16 @@ impl EngineClient {
                 source,
             })?
         } else {
-            let path = endpoint.address.strip_prefix("unix://").unwrap_or(&endpoint.address);
-            Docker::connect_with_unix(path, TIMEOUT_SECS, API_DEFAULT_VERSION).map_err(|source| {
-                ConnectError::Connect {
+            let path = endpoint
+                .address
+                .strip_prefix("unix://")
+                .unwrap_or(&endpoint.address);
+            Docker::connect_with_unix(path, TIMEOUT_SECS, API_DEFAULT_VERSION).map_err(
+                |source| ConnectError::Connect {
                     address: endpoint.address.clone(),
                     source,
-                }
-            })?
+                },
+            )?
         };
 
         let version = docker.version().await.map_err(|source| {
@@ -71,7 +73,10 @@ impl EngineClient {
         );
 
         let server_version = version.version.clone().unwrap_or_else(|| "unknown".into());
-        let api_version = version.api_version.clone().unwrap_or_else(|| "unknown".into());
+        let api_version = version
+            .api_version
+            .clone()
+            .unwrap_or_else(|| "unknown".into());
 
         tracing::info!(
             engine = engine.as_str(),

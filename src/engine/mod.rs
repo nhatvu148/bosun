@@ -168,7 +168,11 @@ pub fn resolve(override_socket: Option<&str>) -> Result<Endpoint, DiscoveryError
 /// OrbStack and Colima both present themselves as Docker over the API, so the
 /// socket path is often the only distinguishing signal — we keep the hint unless
 /// the banner says something more specific (Podman advertises itself clearly).
-pub fn detect_engine(hint: Engine, version_platform: Option<&str>, components: &[String]) -> Engine {
+pub fn detect_engine(
+    hint: Engine,
+    version_platform: Option<&str>,
+    components: &[String],
+) -> Engine {
     let haystack = {
         let mut s = version_platform.unwrap_or_default().to_lowercase();
         for c in components {
@@ -228,7 +232,9 @@ fn path_str(p: PathBuf) -> String {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
 }
 
 #[cfg(test)]
@@ -253,7 +259,10 @@ mod tests {
 
     #[test]
     fn unix_scheme_is_stripped_before_stat() {
-        assert_eq!(strip_scheme("unix:///var/run/docker.sock"), "/var/run/docker.sock");
+        assert_eq!(
+            strip_scheme("unix:///var/run/docker.sock"),
+            "/var/run/docker.sock"
+        );
         assert_eq!(strip_scheme("/var/run/docker.sock"), "/var/run/docker.sock");
     }
 
