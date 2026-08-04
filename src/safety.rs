@@ -31,13 +31,13 @@ pub enum Risk {
 }
 
 impl Risk {
-    /// Is this tool exposed when Bosun runs read-only?
+    /// Is this tool exposed when Kagoni runs read-only?
     pub fn allowed_read_only(self) -> bool {
         matches!(self, Risk::Read)
     }
 }
 
-/// The §6 classification of every tool Bosun exposes.
+/// The §6 classification of every tool Kagoni exposes.
 ///
 /// This exists as data rather than as a comment so it can be *checked*: the test
 /// in `server.rs` walks the live tool router and fails if a tool is added
@@ -47,7 +47,7 @@ impl Risk {
 pub fn risk_of(tool: &str) -> Option<Risk> {
     let risk = match tool {
         // Reads — bounded, no side effects.
-        "bosun_info"
+        "kagoni_info"
         | "list_containers"
         | "inspect_container"
         | "container_logs"
@@ -236,7 +236,7 @@ pub async fn ask_human(
     }
 
     let question = format!(
-        "Bosun wants to {}.\n\n{}\n\nApprove?",
+        "Kagoni wants to {}.\n\n{}\n\nApprove?",
         op.effect,
         op.consequences
             .iter()

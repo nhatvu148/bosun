@@ -1,8 +1,12 @@
-# Bosun
+# Kagoni
 
 An **engine-agnostic, agent-ergonomic Docker MCP server** in Rust.
 
-Bosun exposes container lifecycle, logs, stats and Compose as MCP tools — but every
+*Kagoni* — from 籠 (*kago*), Japanese for basket, cage or crate. 籠に means "in the
+basket": a bounded space you pack carefully because you cannot make it bigger. That is
+the whole design.
+
+Kagoni exposes container lifecycle, logs, stats and Compose as MCP tools — but every
 read is **bounded and summarizing by default**, every destructive write is **gated**,
 and it talks the plain Docker Engine socket, so it drives Docker, OrbStack, Podman or
 Colima through the same code path — see [what has actually been
@@ -15,9 +19,9 @@ It is not a monitoring daemon. It is a control surface for a human-in-the-loop a
 ## Why this exists
 
 This space is not empty — thin CRUD MCP wrappers around `docker ps` are everywhere, and
-autonomous remediation daemons already exist. Bosun is narrower than either:
+autonomous remediation daemons already exist. Kagoni is narrower than either:
 
-| | Bosun | Thin CRUD wrappers | Autonomous daemons |
+| | Kagoni | Thin CRUD wrappers | Autonomous daemons |
 |---|---|---|---|
 | Interaction | human-in-the-loop via MCP | human-in-the-loop | autonomous loop |
 | Read discipline | **bounded by design** | relays raw daemon output | n/a |
@@ -26,10 +30,10 @@ autonomous remediation daemons already exist. Bosun is narrower than either:
 
 The one idea worth the code is **token-budget as the primary design constraint**. A
 crash-looping container emits the same stacktrace five hundred times; relaying that
-verbatim spends a context window to say one thing. Bosun's job is to consume the
+verbatim spends a context window to say one thing. Kagoni's job is to consume the
 firehose and hand back a digest.
 
-**Design rule:** *the default response to any Bosun tool should be safe to put in a
+**Design rule:** *the default response to any Kagoni tool should be safe to put in a
 context window unread.* If it isn't, the tool is wrong.
 
 ---
@@ -45,14 +49,14 @@ cargo install --path .
 cargo install --path . --features remote
 ```
 
-This puts `bosun` in `~/.cargo/bin`. If `bosun: command not found`, that directory
+This puts `kagoni` in `~/.cargo/bin`. If `kagoni: command not found`, that directory
 isn't on your `PATH` — add it, or run the binary directly from
-`./target/release/bosun` after `cargo build --release`.
+`./target/release/kagoni` after `cargo build --release`.
 
 Verify it can find your engine before wiring it into anything:
 
 ```bash
-bosun --check
+kagoni --check
 ```
 
 ```
@@ -70,8 +74,8 @@ Add to `.mcp.json` in your project (or `~/.claude.json` for all projects):
 ```json
 {
   "mcpServers": {
-    "bosun": {
-      "command": "bosun",
+    "kagoni": {
+      "command": "kagoni",
       "args": []
     }
   }
@@ -83,16 +87,16 @@ With an explicit socket and debug logging:
 ```json
 {
   "mcpServers": {
-    "bosun": {
-      "command": "bosun",
+    "kagoni": {
+      "command": "kagoni",
       "args": ["--socket", "/var/run/docker.sock"],
-      "env": { "BOSUN_LOG": "debug" }
+      "env": { "KAGONI_LOG": "debug" }
     }
   }
 }
 ```
 
-Then `/mcp` in Claude Code should list bosun with 18 tools.
+Then `/mcp` in Claude Code should list kagoni with 18 tools.
 
 See [docs/prompts.md](docs/prompts.md) for things to ask it, grouped by what each one
 exercises — including a set for attacking the write-safety gate.
@@ -211,7 +215,7 @@ cannot ship un-gated by accident.
 For a host you are not willing to have an agent change, don't rely on a gate at all:
 
 ```bash
-bosun --read-only            # or BOSUN_READ_ONLY=1
+kagoni --read-only          # or KAGONI_READ_ONLY=1
 ```
 
 Every write tool — start, stop, restart, pull, compose up/down, rm, exec — is **removed
@@ -226,10 +230,10 @@ the absence of the code path. Calling one fails at the protocol level with
 | `--read-only` | 10 | 2,574 |
 
 The whole diagnostic surface survives — `diagnose_container`, `container_logs`,
-`why_compose_failing` and the rest — so read-only Bosun is still the tool you want for
+`why_compose_failing` and the rest — so read-only Kagoni is still the tool you want for
 *troubleshooting* production. It just cannot act on it. The handshake tells the agent it
 is read-only, so it says "this instance cannot do that" rather than hunting for a
-workaround, and `bosun_info` reports the mode.
+workaround, and `kagoni_info` reports the mode.
 
 The filter is driven by the same classification the safety tests enforce, and an
 **unclassified tool is removed, not kept** — a new tool cannot leak into read-only mode
@@ -255,7 +259,7 @@ asks the operator directly before acting, and the confirm token is no longer req
 a human said yes, so demanding a token too would be asking the same question twice:
 
 ```
-Bosun wants to remove container 'my-db' (force-killing it) and its anonymous volumes.
+Kagoni wants to remove container 'my-db' (force-killing it) and its anonymous volumes.
 
   • container 'my-db' would be removed
   • running container 'my-db' would be KILLED first
@@ -273,7 +277,7 @@ No agent can answer that on the operator's behalf. Order of authority is:
 Clients that don't implement elicitation fall back to step 3 automatically, which is
 most of them today. Failing closed instead would break every such client, so the
 fallback is deliberate — but note it means the strength of the gate depends on your
-client. `bosun_info` reports which mode is in effect.
+client. `kagoni_info` reports which mode is in effect.
 
 An elicitation that *errors* is treated as denial rather than falling back: a client
 that advertised the capability and then failed to deliver has told us nothing about
@@ -283,18 +287,18 @@ consent, and that is the one place failing closed is right.
 
 `container_exec` was excluded from v1 on the reasoning that arbitrary code execution is
 too sharp an edge to hand an agent. The first real debugging session disproved it: the
-agent needed to know whether an image shipped `curl`, found no Bosun tool for it, and ran
+agent needed to know whether an image shipped `curl`, found no Kagoni tool for it, and ran
 
 ```
 Bash(docker exec <container> sh -c 'command -v python3 wget nc ...')
 ```
 
-**Omitting exec did not prevent exec.** It routed it somewhere Bosun couldn't bound the
+**Omitting exec did not prevent exec.** It routed it somewhere Kagoni couldn't bound the
 output, couldn't audit the call, and couldn't gate it. The exclusion made the tool surface
 smaller without making anything safer.
 
 So exec is here, and it earns its place by being the *stricter* path: argv-only (never a
-shell string, so nothing is interpreted by a shell Bosun doesn't control), output capped
+shell string, so nothing is interpreted by a shell Kagoni doesn't control), output capped
 at 8 000 chars per stream, a timeout that defaults to 30s and hard-caps at 300s, and
 `Destructive` classification so every call passes §6. HANDOFF §6 anticipated this —
 it listed "maybe `exec`" among the destructive tools from the start.
@@ -305,27 +309,27 @@ it listed "maybe `exec`" among the destructive tools from the start.
 
 Full reproducible numbers: **[docs/BENCHMARK.md](docs/BENCHMARK.md)** — generated by
 `benches/run.py` against a committed fixture stack, with a real BPE tokenizer, including
-the scenarios where Bosun *loses*.
+the scenarios where Kagoni *loses*.
 
 Headline, from that run:
 
 <!-- BENCH:START — generated by benches/run.py, do not edit by hand -->
 
-| Scenario | Raw CLI | Bosun | |
+| Scenario | Raw CLI | Kagoni | |
 |---|---:|---:|---|
 | Logs, repetitive | 30,420 | 380 | **80×** |
 | Fleet health | 31,018 | 2,340 | **13×** |
 | Logs, low repetition | 5,065 | 1,321 | **3.8×** |
 | Container listing | 176 | 400 | 0.44× — *worse* |
 
-Bosun's 18 tool schemas cost **~4,476 tokens resident per session** whether used or not,
+Kagoni's 18 tool schemas cost **~4,476 tokens resident per session** whether used or not,
 so the all-in figure for one fleet-health question is 31,018 → 6,816, about **4.6×**.
 Break-even is roughly one non-trivial container question per session.
 <!-- BENCH:END -->
 
 Earlier ad-hoc measurements on a live container, for reference:
 
-| Call | Raw CLI | Bosun | |
+| Call | Raw CLI | Kagoni | |
 |---|---|---|---|
 | `container_logs` (tail 200) | ~7 780 | ~1 520 | **5.1× less** |
 | `inspect_container` | ~3 020 | ~570 | **5.3× less** |
@@ -334,29 +338,29 @@ Earlier ad-hoc measurements on a live container, for reference:
 
 Worth being straight about: the win is concentrated entirely in `container_logs` and
 `inspect_container`, the two calls that dominate a real debugging session. On the small
-reads Bosun costs *more* than a `docker ... --format table`, because a compact table is
+reads Kagoni costs *more* than a `docker ... --format table`, because a compact table is
 compact by being lossy — it drops block IO, PIDs, throttling, health and limits — and
 because JSON with field names is inherently wordier than columns.
 
 That's the correct trade for a tool an agent parses rather than a human skims, but it
-means "Bosun always saves tokens" would be false. Across a full session the net came out
+means "Kagoni always saves tokens" would be false. Across a full session the net came out
 around 3–7× fewer tokens, all of it from logs and inspect.
 
 ---
 
 ## Diagnosis is deterministic
 
-**No LLM call happens inside Bosun.** The calling agent is the LLM; Bosun's job is to be
+**No LLM call happens inside Kagoni.** The calling agent is the LLM; Kagoni's job is to be
 a fast, honest data source. Every verdict carries the evidence it was built from, so the
 agent can check the reasoning and disagree.
 
 The case that shows why this is worth having — two containers, both exit code 137:
 
 ```
-bosun-oom                 → "Killed by the kernel OOM killer — the process exceeded its memory limit."
+kagoni-oom                 → "Killed by the kernel OOM killer — the process exceeded its memory limit."
                             evidence: state.oom_killed=true — this is the decisive signal
 
-bosun-sigkill-not-oom     → "Exited with code 137: Killed by SIGKILL. Usually an out-of-memory kill,
+kagoni-sigkill-not-oom     → "Exited with code 137: Killed by SIGKILL. Usually an out-of-memory kill,
                              sometimes a `docker stop` that timed out."
                             evidence: state.exit_code=137, restart_count=0
 ```
@@ -415,17 +419,17 @@ reports that explicitly rather than failing cryptically.
 reporting an unsupported scheme.
 
 ```bash
-bosun --check --socket ssh://deploy@prod.example.com
+kagoni --check --socket ssh://deploy@prod.example.com
 ```
 
 **Prefer `ssh://`.** An exposed `tcp://…:2375` is unauthenticated root on that machine —
 anyone who can reach the port can start a privileged container. SSH reuses the access
 control you already have.
 
-Bosun always connects to the address it reports. That sounds obvious; it was not always
+Kagoni always connects to the address it reports. That sounds obvious; it was not always
 true (see the note on `connect_with_defaults` in `engine/client.rs`), and it matters
 because every destructive tool acts on whichever daemon you are actually bound to.
-Run `bosun --check` first and read the `socket:` line.
+Run `kagoni --check` first and read the `socket:` line.
 
 ---
 
@@ -438,7 +442,7 @@ exercise any tool from a shell:
 cargo build --release
 
 ./scripts/try.sh                                     # handshake + list tools
-./scripts/try.sh bosun_info
+./scripts/try.sh kagoni_info
 ./scripts/try.sh explain_exit_code '{"code":137}'    # no daemon needed
 ./scripts/try.sh list_containers '{"all":true}'
 ./scripts/try.sh diagnose_container '{"id":"my-container"}'
@@ -451,19 +455,19 @@ Tools flagged `DESTRUCTIVE` in the listing are the gated ones.
 ## Development
 
 ```bash
-cargo test          # 82 unit tests, no daemon required
+cargo test          # unit tests — no daemon required
 cargo build --release
-bosun --check       # verify engine discovery
+kagoni --check      # verify engine discovery
 ```
 
 The diagnostic fixtures reproduce the failures the diagnostics are built for:
 
 ```bash
-docker compose -p bosun-fixture-crash -f tests/fixtures/crash-loop.compose.yml up -d
-docker compose -p bosun-fixture-oom   -f tests/fixtures/oom.compose.yml up -d
+docker compose -p kagoni-fixture-crash -f tests/fixtures/crash-loop.compose.yml up -d
+docker compose -p kagoni-fixture-oom   -f tests/fixtures/oom.compose.yml up -d
 # ... exercise diagnose_container, then:
-docker compose -p bosun-fixture-crash -f tests/fixtures/crash-loop.compose.yml down
-docker compose -p bosun-fixture-oom   -f tests/fixtures/oom.compose.yml down -v
+docker compose -p kagoni-fixture-crash -f tests/fixtures/crash-loop.compose.yml down
+docker compose -p kagoni-fixture-oom   -f tests/fixtures/oom.compose.yml down -v
 ```
 
 `oom.compose.yml` deliberately includes a **non**-OOM container that also exits 137, so
@@ -479,7 +483,7 @@ src/
 ```
 
 > **stdout discipline:** an stdio MCP server speaks JSON-RPC on stdout. All logging goes
-> to stderr — `--log-level` and `BOSUN_LOG` control it. The one thing that writes to
+> to stderr — `--log-level` and `KAGONI_LOG` control it. The one thing that writes to
 > stdout outside the protocol is `--check`, which exits before serving.
 
 ---

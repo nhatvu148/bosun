@@ -1,10 +1,10 @@
-"""Token measurement for the Bosun benchmark.
+"""Token measurement for the Kagoni benchmark.
 
 Counts tokens with a real BPE tokenizer when one is installed, and says so
 loudly when it falls back to an estimate. The distinction matters: dense JSON
 tokenizes *worse* than bytes/4 and prose-like log text somewhat better, so an
 estimate systematically flatters whichever side has more JSON — which is
-Bosun's. A benchmark that quietly favours its own subject is worthless.
+Kagoni's. A benchmark that quietly favours its own subject is worthless.
 
 Install a tokenizer for publishable numbers:
 
@@ -38,8 +38,8 @@ def sh(cmd: list[str]) -> str:
     return r.stdout + r.stderr
 
 
-def bosun(binary: str, tool: str, args: dict) -> str:
-    """Call one Bosun tool over real stdio JSON-RPC and return its text result.
+def kagoni(binary: str, tool: str, args: dict) -> str:
+    """Call one Kagoni tool over real stdio JSON-RPC and return its text result.
 
     Goes through the actual protocol rather than calling Rust directly, so the
     measurement includes everything the agent would really receive.
@@ -86,10 +86,10 @@ def bosun(binary: str, tool: str, args: dict) -> str:
 
 
 def resident_cost(binary: str) -> tuple[int, int, int]:
-    """Tokens Bosun occupies before any tool is called.
+    """Tokens Kagoni occupies before any tool is called.
 
     Tool schemas and handshake instructions are always-on context. Excluding
-    them would overstate the saving for anyone who loads Bosun and doesn't use
+    them would overstate the saving for anyone who loads Kagoni and doesn't use
     it, so the benchmark carries the cost explicitly.
     """
     req = [

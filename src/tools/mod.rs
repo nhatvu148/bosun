@@ -2,8 +2,8 @@
 //!
 //! Tools are split across modules by kind — bounded reads, guarded actions,
 //! deterministic diagnostics, compose — each contributing its own
-//! `#[tool_router]` impl block on [`crate::server::BosunServer`]. The routers are
-//! merged in `BosunServer::new`.
+//! `#[tool_router]` impl block on [`crate::server::KagoniServer`]. The routers are
+//! merged in `KagoniServer::new`.
 
 pub mod actions;
 pub mod compose;

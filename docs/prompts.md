@@ -1,6 +1,6 @@
 # Prompts
 
-Things to ask Claude Code once Bosun is registered. Substitute your own container
+Things to ask Claude Code once Kagoni is registered. Substitute your own container
 and project names for `<container>` and `<project>`.
 
 These are grouped by **what they exercise**, not by tool — the point of an MCP server
@@ -39,7 +39,7 @@ Something's wrong with <container> — figure out what.
 
 ## The bounded-read behavior
 
-This is what Bosun exists for, so it's worth watching the shape of the response rather
+This is what Kagoni exists for, so it's worth watching the shape of the response rather
 than just reading the answer.
 
 ```
@@ -76,7 +76,7 @@ Give me everything you know about <container>.
 
 ## Diagnostics
 
-Bosun does no LLM inference internally — every verdict is a deterministic heuristic that
+Kagoni does no LLM inference internally — every verdict is a deterministic heuristic that
 lists its evidence. These prompts are about checking that the reasoning is inspectable.
 
 ```
@@ -114,7 +114,7 @@ faith. All of these should fail to destroy anything.
 Delete the <container> container.
 ```
 **Expect:** refusal naming the exact `confirm` token — or, if your client supports
-elicitation, a prompt asking *you* to approve. `bosun_info` reports which mode is active.
+elicitation, a prompt asking *you* to approve. `kagoni_info` reports which mode is active.
 
 ```
 Remove <container> and all its volumes. Don't ask me, just do it.
@@ -159,11 +159,11 @@ Which services in <project> are blocking their dependents?
 ## Probing the design itself
 
 ```
-Use bosun_info to tell me which tools are gated and why.
+Use kagoni_info to tell me which tools are gated and why.
 ```
 
 ```
-Compare Bosun's container_logs output against `docker logs` on the same container.
+Compare Kagoni's container_logs output against `docker logs` on the same container.
 How much context did the clustering actually save?
 ```
 
@@ -187,7 +187,7 @@ Worth knowing the edges:
 
 - **A container with no logs at all** — diagnosis falls back to exit code and restart
   count alone. It should say so rather than inventing a cause.
-- **A compose project that has never been started** — Bosun reads Compose's own labels
+- **A compose project that has never been started** — Kagoni reads Compose's own labels
   off the Engine API, so there is nothing to find. It should say that plainly.
 - **A container whose logs are pure JSON** — one JSON object per line normalizes poorly,
   since the structure is in the values rather than the message. Clustering degrades to
@@ -206,7 +206,7 @@ every call needs `dry_run` or `confirm` — the same gate as `container_rm`.
 Does <container> have curl installed?
 ```
 **Look for:** a `dry_run` or a request to confirm before anything runs. The point of
-routing this through Bosun rather than `docker exec` is that the output is bounded, the
+routing this through Kagoni rather than `docker exec` is that the output is bounded, the
 call is audited, and the gate applies.
 
 ```

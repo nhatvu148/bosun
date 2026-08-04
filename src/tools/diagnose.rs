@@ -1,6 +1,6 @@
 //! Deterministic diagnostics (HANDOFF §4 "Diagnostic", M3).
 //!
-//! **No LLM call happens inside Bosun.** The calling agent is the LLM; Bosun's
+//! **No LLM call happens inside Kagoni.** The calling agent is the LLM; Kagoni's
 //! job is to be a fast, honest data source that hands it bounded ground truth.
 //! Every verdict here comes from plain heuristics over facts the daemon already
 //! knows: exit code, `State.OOMKilled`, restart count, healthcheck history, and
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::bound::bounded_json;
 use crate::bound::logs::{self, Cluster, Level};
 use crate::bound::project::strip_leading_slash;
-use crate::server::BosunServer;
+use crate::server::KagoniServer;
 use crate::tools::tool_error;
 
 /// Log lines to sample when diagnosing. Enough to see a crash-loop pattern
@@ -61,7 +61,7 @@ const ERROR_CLUSTER_THRESHOLD: usize = 3;
 /// verdict's note, so nothing is hidden; they just stop driving the verdict.
 const RECENT_ERROR_WINDOW_SECS: i64 = 3_600;
 
-/// Overall health of the container, as Bosun reads it.
+/// Overall health of the container, as Kagoni reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
@@ -119,14 +119,14 @@ pub struct WhyComposeFailingParams {
 }
 
 #[tool_router(router = diagnose_router, vis = "pub(crate)")]
-impl BosunServer {
+impl KagoniServer {
     /// Diagnose a container from exit code, OOM state, restarts, health and logs.
     #[tool(
         name = "diagnose_container",
         description = "ALWAYS call this before reading raw logs when a container is failing. Returns a \
                        structured verdict — status, likely_cause, evidence[], suggested_actions[] — computed \
                        DETERMINISTICALLY from exit code, State.OOMKilled, restart count, healthcheck history \
-                       and clustered log signals. No LLM inference happens inside Bosun; every conclusion \
+                       and clustered log signals. No LLM inference happens inside Kagoni; every conclusion \
                        lists the evidence it came from, so you can check the reasoning and disagree. \
                        BATCH-CAPABLE — for a whole-fleet health question pass ids=[\"*\"] to diagnose every \
                        container in ONE call rather than looping.",
@@ -309,7 +309,7 @@ impl BosunServer {
             },
             "project_findings": findings,
             "services": services,
-            "method": "Deterministic cross-service analysis. No LLM inference inside Bosun.",
+            "method": "Deterministic cross-service analysis. No LLM inference inside Kagoni.",
         });
 
         bounded_json(
@@ -320,7 +320,7 @@ impl BosunServer {
     }
 }
 
-impl BosunServer {
+impl KagoniServer {
     /// Diagnose one container. Split out so the batch path can fan out.
     async fn diagnose_one(&self, id: &str) -> Result<Diagnosis, String> {
         let inspect = self
@@ -589,12 +589,12 @@ fn diagnose_at(
         )
     } else if let Some(stale) = clusters.iter().find(|c| is_significant(c)) {
         // Errors exist but stopped. That is not a *live* fault, so it must not
-        // read as one — but "stopped" has two explanations and Bosun cannot tell
+        // read as one — but "stopped" has two explanations and Kagoni cannot tell
         // them apart. Saying so beats implying the reassuring one: a reader who
         // takes silence for a fix stops looking, and the bug outlives the alarm.
         actions.push(format!(
             "Determine WHICH: was this fixed, or has the failing path simply not run since? \
-             Bosun cannot tell. Check directly — the errors last fired {}",
+             Kagoni cannot tell. Check directly — the errors last fired {}",
             ago(stale, now)
         ));
         actions.push("Call container_logs(id, level='error') to see the full history".into());
@@ -634,7 +634,7 @@ fn diagnose_at(
         suggested_actions: actions,
         log_signals: clusters.to_vec(),
         method: "Deterministic heuristics over exit code, OOM state, restart count, \
-                 healthcheck history and clustered log signals. No LLM inference inside Bosun.",
+                 healthcheck history and clustered log signals. No LLM inference inside Kagoni.",
     }
 }
 
@@ -1184,7 +1184,7 @@ mod tests {
         assert!(
             d.suggested_actions
                 .iter()
-                .any(|a| a.contains("Bosun cannot tell")),
+                .any(|a| a.contains("Kagoni cannot tell")),
             "the action must admit the limit rather than implying resolution"
         );
     }

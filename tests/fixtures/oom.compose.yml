@@ -5,10 +5,10 @@
 # a `docker stop` that timed out, which also exits 137. A correct diagnosis says
 # "out of memory", not "killed by SIGKILL".
 #
-#   docker compose -p bosun-fixture-oom -f oom.compose.yml up -d
+#   docker compose -p kagoni-fixture-oom -f oom.compose.yml up -d
 #   sleep 5
-#   # then, in Claude Code: diagnose_container(id="bosun-oom")
-#   docker compose -p bosun-fixture-oom -f oom.compose.yml down
+#   # then, in Claude Code: diagnose_container(id="kagoni-oom")
+#   docker compose -p kagoni-fixture-oom -f oom.compose.yml down
 #
 # NOTE: needs a Linux container runtime with memory cgroup accounting. On
 # Docker Desktop / OrbStack / Colima this works inside their Linux VM.
@@ -16,7 +16,7 @@
 services:
   oom:
     image: busybox:latest
-    container_name: bosun-oom
+    container_name: kagoni-oom
     restart: "no"
     # 16 MB ceiling, then allocate well past it. The tmpfs write counts against
     # the cgroup's memory budget, so the kernel OOM-kills the process.
@@ -31,7 +31,7 @@ services:
   # checks State.OOMKilled will not.
   sigkill-not-oom:
     image: busybox:latest
-    container_name: bosun-sigkill-not-oom
+    container_name: kagoni-sigkill-not-oom
     restart: "no"
     # Ignores SIGTERM, so `docker stop` escalates to SIGKILL after the timeout.
     command: sh -c "trap '' TERM; echo 'ignoring SIGTERM'; sleep 3600"

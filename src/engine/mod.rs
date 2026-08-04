@@ -1,6 +1,6 @@
 //! Engine-agnostic socket discovery and engine detection (HANDOFF §7).
 //!
-//! Bosun talks the plain Docker Engine API, so anything that speaks it —
+//! Kagoni talks the plain Docker Engine API, so anything that speaks it —
 //! Docker Desktop, OrbStack, Colima, Podman — works through the same code path.
 //! This module decides *which* endpoint to bind to and *what to call it*.
 
@@ -42,8 +42,8 @@ impl fmt::Display for Engine {
     }
 }
 
-/// How we arrived at an endpoint — surfaced by `bosun_info` so the user can see
-/// why Bosun bound where it did without re-deriving the search order by hand.
+/// How we arrived at an endpoint — surfaced by `kagoni_info` so the user can see
+/// why Kagoni bound where it did without re-deriving the search order by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     CliFlag,
@@ -83,7 +83,7 @@ pub struct Endpoint {
 /// Every place we know to look, in the order HANDOFF §7 specifies.
 ///
 /// Ordering matters and is deliberate: an explicit `DOCKER_HOST` always wins so
-/// the user can point Bosun anywhere, and the OrbStack/Colima paths come before
+/// the user can point Kagoni anywhere, and the OrbStack/Colima paths come before
 /// `/var/run/docker.sock` because on macOS that path is usually a symlink *into*
 /// one of them — matching the real path first gives a more honest engine label.
 fn candidates() -> Vec<Endpoint> {
@@ -319,7 +319,7 @@ mod tests {
     fn podman_machine_scan_matches_the_real_socket_name() {
         // The exact filename observed from podman 6.0.2 on macOS. Guessing this
         // is what produced two wrong paths before anyone ran it for real.
-        let dir = std::env::temp_dir().join(format!("bosun-scan-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("kagoni-scan-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for name in [
             "podman-machine-default-api.sock",
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn a_missing_podman_directory_is_not_an_error() {
         // The overwhelmingly common case: no Podman installed at all.
-        let missing = std::env::temp_dir().join("bosun-definitely-not-here-xyz");
+        let missing = std::env::temp_dir().join("kagoni-definitely-not-here-xyz");
         assert!(scan(&missing).is_empty());
     }
 
