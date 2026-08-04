@@ -6,10 +6,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Nothing here writes anything. Least privilege by default.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run's answer irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
-  # Fail on warnings in CI only. Locally a warning should be a nudge, not a wall.
-  RUSTFLAGS: -D warnings
 
 jobs:
   test:
@@ -29,8 +36,12 @@ jobs:
       - name: Formatting
         run: cargo fmt --all --check
 
+      # -D warnings goes after `--`, so it applies to this crate only. As a
+      # global RUSTFLAGS it would also deny warnings in every dependency, and
+      # CI would then break on an upstream lint change that has nothing to do
+      # with Bosun — on a PR that didn't cause it.
       - name: Clippy
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       # The suite is deliberately daemon-free: every test runs against fixtures
       # or pure functions, so CI needs no Docker socket. If a test ever starts
