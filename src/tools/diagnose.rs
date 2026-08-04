@@ -570,18 +570,22 @@ fn diagnose_at(
             )),
         )
     } else if let Some(stale) = clusters.iter().find(|c| is_significant(c)) {
-        // Errors exist but stopped. That is history, not a current condition —
-        // reported so it can't be missed, but not treated as a live fault.
+        // Errors exist but stopped. That is not a *live* fault, so it must not
+        // read as one — but "stopped" has two explanations and Bosun cannot tell
+        // them apart. Saying so beats implying the reassuring one: a reader who
+        // takes silence for a fix stops looking, and the bug outlives the alarm.
         actions.push(format!(
-            "Errors stopped {}. Confirm they were fixed rather than merely untriggered — \
-             a code path nothing has exercised can still be broken",
+            "Determine WHICH: was this fixed, or has the failing path simply not run since? \
+             Bosun cannot tell. Check directly — the errors last fired {}",
             ago(stale, now)
         ));
         actions.push("Call container_logs(id, level='error') to see the full history".into());
         (
             Verdict::Healthy,
             Some(format!(
-                "Currently healthy. Logged errors earlier, most recently {}: {} (seen {}x).",
+                "Container is healthy, but it logged errors earlier — most recently {}: {} (seen {}x). \
+                 UNRESOLVED: absence of recent errors does not mean they were fixed; the code path \
+                 may simply not have been exercised since. Verify before treating this as history.",
                 ago(stale, now),
                 stale.sample,
                 stale.count
@@ -1113,11 +1117,26 @@ mod tests {
         assert_eq!(d.status, Verdict::Healthy);
         // Reported, not hidden — the agent still needs to see it.
         let cause = d.likely_cause.as_ref().unwrap();
-        assert!(cause.contains("Logged errors earlier"), "got: {cause}");
+        assert!(cause.contains("logged errors earlier"), "got: {cause}");
         assert!(cause.contains("ocr_usage"), "got: {cause}");
+
+        // The regression this guards, observed in a real session: softening the
+        // verdict to Healthy led the reading agent to conclude "the migration was
+        // probably applied" — for a table that does not exist. The wording has to
+        // state the unknown outright, or a reassuring tone gets read as an answer.
         assert!(
-            d.suggested_actions.iter().any(|a| a.contains("untriggered")),
-            "must warn that silence may mean the path was never exercised"
+            cause.contains("UNRESOLVED"),
+            "the verdict must name the unknown explicitly: {cause}"
+        );
+        assert!(
+            cause.contains("does not mean they were fixed"),
+            "the verdict must block the optimistic reading: {cause}"
+        );
+        assert!(
+            d.suggested_actions
+                .iter()
+                .any(|a| a.contains("Bosun cannot tell")),
+            "the action must admit the limit rather than implying resolution"
         );
     }
 
