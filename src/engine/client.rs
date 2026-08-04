@@ -29,12 +29,19 @@ impl EngineClient {
     pub async fn connect(override_socket: Option<&str>) -> Result<Self, ConnectError> {
         let endpoint = resolve(override_socket)?;
 
-        let docker = if endpoint.address.contains("://") && !endpoint.address.starts_with("unix://")
-        {
-            // tcp:// / ssh:// / npipe:// — let bollard parse the URL itself.
-            Docker::connect_with_defaults().map_err(|source| ConnectError::Connect {
-                address: endpoint.address.clone(),
-                source,
+        // Dispatch on the address we actually resolved. An earlier version called
+        // `connect_with_defaults()` here, which reads DOCKER_HOST from the
+        // environment and therefore *ignored* the address entirely: passing
+        // `--socket tcp://remote:2375` connected to the local daemon while
+        // `bosun_info` cheerfully reported the remote one. Being wrong about
+        // which daemon you are driving is the single most dangerous thing this
+        // server can do, since every destructive tool acts on that answer.
+        let docker = if is_remote(&endpoint.address) {
+            Docker::connect_with_host(&endpoint.address).map_err(|source| {
+                ConnectError::Connect {
+                    address: endpoint.address.clone(),
+                    source,
+                }
             })?
         } else {
             let path = endpoint
@@ -50,12 +57,23 @@ impl EngineClient {
         };
 
         let version = docker.version().await.map_err(|source| {
-            // A socket that exists but won't answer /version is the signature of
-            // something that isn't a Docker Engine.
             tracing::debug!(%source, "version probe failed");
-            ConnectError::Discovery(DiscoveryError::NotDockerApi {
-                address: endpoint.address.clone(),
-            })
+            // The same failed probe means two very different things. A *local*
+            // socket that exists but won't answer is usually not a Docker Engine
+            // at all. A *remote* address that won't answer is almost always
+            // unreachable — wrong host, closed port, no tunnel. Telling someone
+            // debugging a production connection that their engine is
+            // "not Docker-API-compatible" sends them somewhere useless.
+            if is_remote(&endpoint.address) {
+                ConnectError::Unreachable {
+                    address: endpoint.address.clone(),
+                    source,
+                }
+            } else {
+                ConnectError::Discovery(DiscoveryError::NotDockerApi {
+                    address: endpoint.address.clone(),
+                })
+            }
         })?;
 
         let component_names: Vec<String> = version
@@ -116,6 +134,14 @@ impl EngineClient {
     }
 }
 
+/// Is this address something other than a local unix socket path?
+///
+/// `tcp://`, `http://`, `https://`, `ssh://` and `npipe://` all need bollard's
+/// scheme-aware constructor; a bare path or `unix://` does not.
+fn is_remote(address: &str) -> bool {
+    address.contains("://") && !address.starts_with("unix://")
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
     #[error(transparent)]
@@ -127,4 +153,58 @@ pub enum ConnectError {
         #[source]
         source: bollard::errors::Error,
     },
+
+    #[error(
+        "connected to '{address}' but it never answered /version: {source}\n\
+         Check the host is reachable, the daemon is listening, and any tunnel is up. \
+         For a remote host, ssh://user@host is safer than exposing tcp://:2375, which is \
+         unauthenticated root access to that machine."
+    )]
+    Unreachable {
+        address: String,
+        #[source]
+        source: bollard::errors::Error,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_schemes_are_distinguished_from_local_socket_paths() {
+        // This predicate decides which bollard constructor runs. Getting it
+        // wrong is how `--socket tcp://remote` silently drove the local daemon.
+        for remote in [
+            "tcp://10.0.0.5:2375",
+            "http://10.0.0.5:2375",
+            "https://10.0.0.5:2376",
+            "ssh://deploy@prod.example.com",
+            "npipe:////./pipe/docker_engine",
+        ] {
+            assert!(is_remote(remote), "{remote} should be treated as remote");
+        }
+
+        for local in [
+            "/var/run/docker.sock",
+            "unix:///var/run/docker.sock",
+            "/Users/me/.orbstack/run/docker.sock",
+        ] {
+            assert!(!is_remote(local), "{local} should be treated as local");
+        }
+    }
+
+    #[test]
+    fn an_unreachable_remote_does_not_blame_the_engine_type() {
+        // A network failure reported as "your engine isn't Docker-compatible"
+        // sends someone debugging a production connection nowhere useful.
+        let err = ConnectError::Unreachable {
+            address: "tcp://prod:2375".into(),
+            source: bollard::errors::Error::UnsupportedURISchemeError { uri: "x".into() },
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("never answered /version"), "{msg}");
+        assert!(msg.contains("reachable"), "{msg}");
+        assert!(!msg.contains("Apple"), "must not misattribute: {msg}");
+    }
 }
