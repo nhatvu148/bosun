@@ -151,7 +151,24 @@ def main() -> int:
     for label, question, raw_fn, bosun_fn in SCENARIOS:
         t0 = time.monotonic(); raw_tok, raw_calls = raw_fn(names); raw_s = time.monotonic() - t0
         t0 = time.monotonic(); bos_tok, bos_calls = bosun_fn(names); bos_s = time.monotonic() - t0
-        ratio = raw_tok / bos_tok if bos_tok else 0.0
+
+        # Reject a zero side rather than dividing around it. Either count being
+        # zero means a command produced nothing — a broken harness, not a
+        # measurement — and every downstream ratio would be meaningless. An
+        # earlier version returned 0.0 here, which rendered as "0.00x" and read
+        # like a real result. Failing loudly is the honest option, and it makes
+        # the aggregate and summary divisions safe by construction.
+        if raw_tok == 0 or bos_tok == 0:
+            print(
+                f"scenario '{label}' produced no output "
+                f"(raw={raw_tok} tok, bosun={bos_tok} tok).\n"
+                "The harness is broken or the fixture stack is not healthy; "
+                "refusing to publish a ratio derived from it.",
+                file=sys.stderr,
+            )
+            return 1
+
+        ratio = raw_tok / bos_tok
         rows.append((label, question, raw_tok, raw_calls, raw_s, bos_tok, bos_calls, bos_s, ratio))
         totals[0] += raw_tok; totals[1] += raw_calls
         totals[2] += bos_tok; totals[3] += bos_calls

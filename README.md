@@ -278,13 +278,13 @@ Headline, from that run:
 
 | Scenario | Raw CLI | Bosun | |
 |---|---:|---:|---|
-| Logs, heavy repetition | 30,537 | 380 | **80×** |
-| Fleet health (6 containers) | 31,093 | 2,346 | **13×** |
+| Logs, heavy repetition | 30,339 | 380 | **80×** |
+| Fleet health (6 containers) | 30,984 | 2,585 | **12×** |
 | Logs, low repetition | 5,065 | 1,321 | **3.8×** |
-| Container listing | 175 | 399 | 0.44× — *worse* |
+| Container listing | 181 | 405 | 0.45× — *worse* |
 
 Bosun's 18 tool schemas cost **~4,476 tokens resident per session** whether used or not,
-so the all-in figure for one fleet-health question is 31,093 → 6,822, about **4.6×**.
+so the all-in figure for one fleet-health question is 30,984 → 7,061, about **4.4×**.
 Break-even is roughly one non-trivial container question per session.
 
 Earlier ad-hoc measurements on a live container, for reference:

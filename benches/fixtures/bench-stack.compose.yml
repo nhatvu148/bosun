@@ -5,7 +5,7 @@
 # benchmark nobody else can reproduce is a claim, not a measurement.
 #
 #   docker compose -p bosun-bench -f benches/fixtures/bench-stack.compose.yml up -d
-#   ./benches/run.sh
+#   python3 benches/run.py > docs/BENCHMARK.md
 #   docker compose -p bosun-bench -f benches/fixtures/bench-stack.compose.yml down
 #
 # The mix is deliberate — it covers the cases where Bosun wins big, wins a
