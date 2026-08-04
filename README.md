@@ -215,7 +215,7 @@ cannot ship un-gated by accident.
 For a host you are not willing to have an agent change, don't rely on a gate at all:
 
 ```bash
-kagoni --read-only            # or KAGONI_READ_ONLY=1
+kagoni --read-only          # or KAGONI_READ_ONLY=1
 ```
 
 Every write tool — start, stop, restart, pull, compose up/down, rm, exec — is **removed
@@ -455,9 +455,9 @@ Tools flagged `DESTRUCTIVE` in the listing are the gated ones.
 ## Development
 
 ```bash
-cargo test          # 82 unit tests, no daemon required
+cargo test          # unit tests — no daemon required
 cargo build --release
-kagoni --check       # verify engine discovery
+kagoni --check      # verify engine discovery
 ```
 
 The diagnostic fixtures reproduce the failures the diagnostics are built for:
