@@ -337,6 +337,24 @@ but doesn't speak the Engine API fails with a clear message.
 Apple's `container` tool does **not** expose a Docker Engine API and is unsupported; it
 reports that explicitly rather than failing cryptically.
 
+### Remote hosts
+
+`--socket` and `DOCKER_HOST` accept `ssh://user@host`, `tcp://host:2375` and
+`https://host:2376` as well as local paths:
+
+```bash
+bosun --check --socket ssh://deploy@prod.example.com
+```
+
+**Prefer `ssh://`.** An exposed `tcp://…:2375` is unauthenticated root on that machine —
+anyone who can reach the port can start a privileged container. SSH reuses the access
+control you already have.
+
+Bosun always connects to the address it reports. That sounds obvious; it was not always
+true (see the note on `connect_with_defaults` in `engine/client.rs`), and it matters
+because every destructive tool acts on whichever daemon you are actually bound to.
+Run `bosun --check` first and read the `socket:` line.
+
 ---
 
 ## Trying it without an MCP client

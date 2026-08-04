@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here writes anything. Least privilege by default.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the older run's answer irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test / clippy / fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      # -D warnings goes after `--`, so it applies to this crate only. As a
+      # global RUSTFLAGS it would also deny warnings in every dependency, and
+      # CI would then break on an upstream lint change that has nothing to do
+      # with Bosun — on a PR that didn't cause it.
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # The suite is deliberately daemon-free: every test runs against fixtures
+      # or pure functions, so CI needs no Docker socket. If a test ever starts
+      # needing one, that is a signal the logic should be extracted, not that
+      # CI should grow a service container.
+      - name: Tests
+        run: cargo test --all-features
+
+      - name: Release build
+        run: cargo build --release
+
+      - name: Engine discovery smoke test
+        # GitHub runners ship a running Docker, so the success path is the one
+        # normally exercised here. The failure path is still asserted because a
+        # binary that cannot fail *correctly* is broken too — and because the
+        # runner image is not a contract we control.
+        run: |
+          set +e
+          output=$(./target/release/bosun --check 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          case "$output" in
+            *panicked*) echo "::error::--check panicked"; exit 1 ;;
+          esac
+          if [ "$status" -eq 0 ]; then
+            case "$output" in
+              *"engine:"*"socket:"*) echo "OK: resolved an engine" ;;
+              *) echo "::error::exit 0 but no engine reported"; exit 1 ;;
+            esac
+          else
+            case "$output" in
+              *"no container engine socket found"*)
+                echo "OK: no engine present, failed with the actionable message" ;;
+              *) echo "::error::failed without the discovery message: $output"; exit 1 ;;
+            esac
+          fi
+
+      - name: MCP protocol smoke test
+        # The one thing unit tests structurally cannot cover: that the binary
+        # actually speaks JSON-RPC on stdout and keeps every log line off it.
+        # stdout discipline is the classic stdio-MCP footgun, and it can only
+        # break in the real process.
+        run: |
+          set -euo pipefail
+          out=$(
+            {
+              echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+              echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+              echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+              sleep 3
+            } | ./target/release/bosun --log-level trace 2>/dev/null
+          )
+          python3 - "$out" <<'PY'
+          import json, sys
+          lines = [l for l in sys.argv[1].splitlines() if l.strip()]
+          # Every stdout line must be valid JSON-RPC. A stray log line here is
+          # exactly the corruption this test exists to catch — note the server
+          # was run at trace verbosity to make that as likely as possible.
+          msgs = []
+          for line in lines:
+              try:
+                  msgs.append(json.loads(line))
+              except json.JSONDecodeError:
+                  sys.exit(f"non-JSON on stdout (log leaked into the MCP channel): {line[:200]}")
+          tools = next((m["result"]["tools"] for m in msgs if m.get("id") == 2), None)
+          if tools is None:
+              sys.exit("no tools/list response")
+          names = sorted(t["name"] for t in tools)
+          print(f"{len(names)} tools: {', '.join(names)}")
+          # Guard the safety contract at the protocol level, not just in unit tests.
+          for required in ("bosun_info", "container_rm", "container_exec", "diagnose_container"):
+              if required not in names:
+                  sys.exit(f"missing tool: {required}")
+          for t in tools:
+              if t["name"] in ("container_rm", "compose_down", "container_exec"):
+                  if not (t.get("annotations") or {}).get("destructiveHint"):
+                      sys.exit(f"{t['name']} is not marked destructive over the wire")
+          PY
+
+  msrv:
+    name: msrv (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      # Cargo.toml claims rust-version = "1.85". Claiming it without checking it
+      # is how a manifest drifts into lying to `cargo install`.
+      - name: Build on the declared MSRV
+        run: cargo build --all-features

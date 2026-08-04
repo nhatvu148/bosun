@@ -208,7 +208,11 @@ fn project_mount(m: &MountPoint) -> ProjectedMount {
 
 /// Render port bindings the way `docker ps` does: `0.0.0.0:8080->80/tcp`.
 fn project_ports(inspect: &ContainerInspectResponse) -> Vec<String> {
-    let Some(ports) = inspect.network_settings.as_ref().and_then(|n| n.ports.as_ref()) else {
+    let Some(ports) = inspect
+        .network_settings
+        .as_ref()
+        .and_then(|n| n.ports.as_ref())
+    else {
         return Vec::new();
     };
 
@@ -265,7 +269,10 @@ mod tests {
 
     #[test]
     fn env_values_are_never_exposed_by_the_key_extractor() {
-        assert_eq!(env_key("DATABASE_URL=postgres://user:hunter2@db/app"), "DATABASE_URL");
+        assert_eq!(
+            env_key("DATABASE_URL=postgres://user:hunter2@db/app"),
+            "DATABASE_URL"
+        );
         assert_eq!(env_key("PATH=/usr/bin"), "PATH");
         assert_eq!(env_key("BARE_KEY"), "BARE_KEY");
     }
