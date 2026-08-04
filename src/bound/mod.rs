@@ -1,4 +1,4 @@
-//! Token-bounded I/O — the core design constraint (HANDOFF §5).
+//! Token-bounded I/O — the core design constraint (docs/ORIGINAL-SPEC.md §5).
 //!
 //! Design rule of thumb from the spec: *the default response to any Kagoni tool
 //! should be safe to put in a context window unread.* This module holds the

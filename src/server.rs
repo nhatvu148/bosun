@@ -481,7 +481,7 @@ mod tests {
         }
     }
 
-    /// `container_exec` was originally excluded per HANDOFF §11, then added once
+    /// `container_exec` was originally excluded per docs/ORIGINAL-SPEC.md §11, then added once
     /// real use showed the omission just pushed agents to `Bash(docker exec …)` —
     /// unbounded, unaudited and ungated. It only earns its place while it stays
     /// gated, so that is what this asserts. If exec is ever reclassified `Safe`,

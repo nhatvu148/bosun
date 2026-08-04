@@ -1,4 +1,4 @@
-//! Bounded read tools (HANDOFF §4 "Read / state", M1).
+//! Bounded read tools (docs/ORIGINAL-SPEC.md §4 "Read / state", M1).
 //!
 //! Every tool here caps its own output and documents the cap in its description,
 //! and every one offers an explicit escape hatch (`full` / `raw`) so a

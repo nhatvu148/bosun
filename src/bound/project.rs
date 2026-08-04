@@ -1,4 +1,4 @@
-//! Inspect projection (HANDOFF §5).
+//! Inspect projection (docs/ORIGINAL-SPEC.md §5).
 //!
 //! `docker inspect` returns a blob measured in kilobytes, most of it graph-driver
 //! paths and defaults nobody reads. This module projects it down to the fields

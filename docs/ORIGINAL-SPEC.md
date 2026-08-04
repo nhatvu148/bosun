@@ -1,11 +1,6 @@
-> **Historical document — kept verbatim.** This is the original spec, written before
-> any code existed, when the project was called **Bosun**. Its wording is unchanged
-> so it stays an honest record of what was planned versus what was built — including
-> the decisions real use later reversed (§11 left `exec` out of v1; it is in, and the
-> reasoning is in `src/tools/actions.rs`).
->
-> The project is now **Kagoni** — `bosun` on crates.io belongs to an unrelated Sigma
-> Prime project. See [README.md](README.md) for current documentation.
+> The spec this project was built from, written before any code existed and kept
+> verbatim — including the name it had then (**Bosun**) and the decisions real use
+> later reversed. Current documentation is in [../README.md](../README.md).
 
 # Bosun — Handoff Plan
 

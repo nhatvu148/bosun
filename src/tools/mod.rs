@@ -1,4 +1,4 @@
-//! MCP tool surface (HANDOFF §4).
+//! MCP tool surface (docs/ORIGINAL-SPEC.md §4).
 //!
 //! Tools are split across modules by kind — bounded reads, guarded actions,
 //! deterministic diagnostics, compose — each contributing its own

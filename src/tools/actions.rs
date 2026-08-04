@@ -1,4 +1,4 @@
-//! Action tools (HANDOFF §4 "Actions — guarded", M2).
+//! Action tools (docs/ORIGINAL-SPEC.md §4 "Actions — guarded", M2).
 //!
 //! Lifecycle verbs are reversible and allowed directly. Removal and exec are
 //! destructive and routed through [`crate::safety`], which requires a `dry_run`
@@ -6,7 +6,7 @@
 //!
 //! ## Why `container_exec` exists after all
 //!
-//! HANDOFF §11 leaned toward leaving exec out of v1, and it shipped that way.
+//! docs/ORIGINAL-SPEC.md §11 leaned toward leaving exec out of v1, and it shipped that way.
 //! First real session, the agent hit the gap and reached for
 //! `Bash(docker exec …)` instead — which is the observation that changes the
 //! calculus. **Omitting exec did not prevent exec.** It pushed the agent to an
