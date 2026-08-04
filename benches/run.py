@@ -1,11 +1,11 @@
-"""Bosun token benchmark: Bosun vs the raw docker CLI, same question either way.
+"""Kagoni token benchmark: Kagoni vs the raw docker CLI, same question either way.
 
-Each scenario pairs the Bosun calls an agent actually makes against the docker
+Each scenario pairs the Kagoni calls an agent actually makes against the docker
 commands it would otherwise run to answer the *same* question. Scenarios where
-Bosun loses are included deliberately — a benchmark that only reports wins gets
+Kagoni loses are included deliberately — a benchmark that only reports wins gets
 taken apart the first time somebody checks it.
 
-    docker compose -p bosun-bench -f benches/fixtures/bench-stack.compose.yml up -d
+    docker compose -p kagoni-bench -f benches/fixtures/bench-stack.compose.yml up -d
     python3 benches/run.py --sync-readme > docs/BENCHMARK.md
 
 --sync-readme also rewrites the generated headline block in README.md, so the
@@ -24,18 +24,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
-from measure import TOKENIZER, bosun, count, resident_cost, sh  # noqa: E402
+from measure import TOKENIZER, kagoni, count, resident_cost, sh  # noqa: E402
 
-BINARY = os.path.join(ROOT, "target", "release", "bosun")
+BINARY = os.path.join(ROOT, "target", "release", "kagoni")
 COMPOSE_FILE = os.path.join(HERE, "fixtures", "bench-stack.compose.yml")
-PROJECT = "bosun-bench"
+PROJECT = "kagoni-bench"
 FLEET = [
-    "bosun-bench-chatty",
-    "bosun-bench-varied",
-    "bosun-bench-crashloop",
-    "bosun-bench-quiet-1",
-    "bosun-bench-quiet-2",
-    "bosun-bench-quiet-3",
+    "kagoni-bench-chatty",
+    "kagoni-bench-varied",
+    "kagoni-bench-crashloop",
+    "kagoni-bench-quiet-1",
+    "kagoni-bench-quiet-2",
+    "kagoni-bench-quiet-3",
 ]
 
 
@@ -45,16 +45,16 @@ def running_fixture() -> list[str]:
     return [n for n in out.split() if n]
 
 
-# Each scenario: (name, question, raw_fn, bosun_fn).
+# Each scenario: (name, question, raw_fn, kagoni_fn).
 # The functions return (tokens, call_count) so we can report both — the call
 # count is a latency and reliability story the token number doesn't tell.
 #
 # FAIRNESS: both sides must cover exactly the same containers. The first
 # version of this benchmark ran an unfiltered `docker ps -a` against a
-# *filtered* Bosun call, so on a machine with other containers running the raw
-# side was charged for rows Bosun never returned. That inflated Bosun's numbers
+# *filtered* Kagoni call, so on a machine with other containers running the raw
+# side was charged for rows Kagoni never returned. That inflated Kagoni's numbers
 # by comparing two different questions. Every raw command below is scoped to
-# the fixture stack, exactly as the Bosun call is.
+# the fixture stack, exactly as the Kagoni call is.
 
 PS_FORMAT = "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
 STATS_FORMAT = ("table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
@@ -72,44 +72,44 @@ def raw_fleet(names):
     return sum(count(sh(c)) for c in calls), len(calls)
 
 
-def bosun_fleet(names):
+def kagoni_fleet(names):
     out = [
-        bosun(BINARY, "list_containers", {"all": True, "filter": "bosun-bench"}),
-        bosun(BINARY, "diagnose_container", {"ids": names}),
-        bosun(BINARY, "container_stats", {"ids": [n for n in names if "crashloop" not in n]}),
+        kagoni(BINARY, "list_containers", {"all": True, "filter": "kagoni-bench"}),
+        kagoni(BINARY, "diagnose_container", {"ids": names}),
+        kagoni(BINARY, "container_stats", {"ids": [n for n in names if "crashloop" not in n]}),
     ]
     return sum(count(o) for o in out), len(out)
 
 
 def raw_triage(names):
-    target = "bosun-bench-crashloop"
+    target = "kagoni-bench-crashloop"
     calls = [["docker", "inspect", target],
              ["docker", "logs", "--tail", "200", "--timestamps", target]]
     return sum(count(sh(c)) for c in calls), len(calls)
 
 
-def bosun_triage(names):
-    out = [bosun(BINARY, "diagnose_container", {"id": "bosun-bench-crashloop"})]
+def kagoni_triage(names):
+    out = [kagoni(BINARY, "diagnose_container", {"id": "kagoni-bench-crashloop"})]
     return sum(count(o) for o in out), len(out)
 
 
 def raw_logs_repetitive(names):
-    calls = [["docker", "logs", "--tail", "600", "--timestamps", "bosun-bench-chatty"]]
+    calls = [["docker", "logs", "--tail", "600", "--timestamps", "kagoni-bench-chatty"]]
     return sum(count(sh(c)) for c in calls), len(calls)
 
 
-def bosun_logs_repetitive(names):
-    out = [bosun(BINARY, "container_logs", {"id": "bosun-bench-chatty", "tail": 600})]
+def kagoni_logs_repetitive(names):
+    out = [kagoni(BINARY, "container_logs", {"id": "kagoni-bench-chatty", "tail": 600})]
     return sum(count(o) for o in out), len(out)
 
 
 def raw_logs_varied(names):
-    calls = [["docker", "logs", "--tail", "200", "--timestamps", "bosun-bench-varied"]]
+    calls = [["docker", "logs", "--tail", "200", "--timestamps", "kagoni-bench-varied"]]
     return sum(count(sh(c)) for c in calls), len(calls)
 
 
-def bosun_logs_varied(names):
-    out = [bosun(BINARY, "container_logs", {"id": "bosun-bench-varied", "tail": 200})]
+def kagoni_logs_varied(names):
+    out = [kagoni(BINARY, "container_logs", {"id": "kagoni-bench-varied", "tail": 200})]
     return sum(count(o) for o in out), len(out)
 
 
@@ -118,17 +118,17 @@ def raw_list(names):
     return sum(count(sh(c)) for c in calls), len(calls)
 
 
-def bosun_list(names):
-    out = [bosun(BINARY, "list_containers", {"all": True, "filter": "bosun-bench"})]
+def kagoni_list(names):
+    out = [kagoni(BINARY, "list_containers", {"all": True, "filter": "kagoni-bench"})]
     return sum(count(o) for o in out), len(out)
 
 
 SCENARIOS = [
-    ("Fleet health", "How is everything doing?", raw_fleet, bosun_fleet),
-    ("Crash-loop triage", "Why is this container failing?", raw_triage, bosun_triage),
-    ("Logs, repetitive", "600 lines, heavy repetition", raw_logs_repetitive, bosun_logs_repetitive),
-    ("Logs, low repetition", "200 structurally distinct lines", raw_logs_varied, bosun_logs_varied),
-    ("Container listing", "What is running?", raw_list, bosun_list),
+    ("Fleet health", "How is everything doing?", raw_fleet, kagoni_fleet),
+    ("Crash-loop triage", "Why is this container failing?", raw_triage, kagoni_triage),
+    ("Logs, repetitive", "600 lines, heavy repetition", raw_logs_repetitive, kagoni_logs_repetitive),
+    ("Logs, low repetition", "200 structurally distinct lines", raw_logs_varied, kagoni_logs_varied),
+    ("Container listing", "What is running?", raw_list, kagoni_list),
 ]
 
 
@@ -185,9 +185,9 @@ def main() -> int:
     resident = schemas + instructions
 
     rows, totals = [], [0, 0, 0, 0]
-    for label, question, raw_fn, bosun_fn in SCENARIOS:
+    for label, question, raw_fn, kagoni_fn in SCENARIOS:
         raw_tok, raw_calls = raw_fn(names)
-        bos_tok, bos_calls = bosun_fn(names)
+        bos_tok, bos_calls = kagoni_fn(names)
 
         # Reject a zero side rather than dividing around it. Either count being
         # zero means a command produced nothing — a broken harness, not a
@@ -198,7 +198,7 @@ def main() -> int:
         if raw_tok == 0 or bos_tok == 0:
             print(
                 f"scenario '{label}' produced no output "
-                f"(raw={raw_tok} tok, bosun={bos_tok} tok).\n"
+                f"(raw={raw_tok} tok, kagoni={bos_tok} tok).\n"
                 "The harness is broken or the fixture stack is not healthy; "
                 "refusing to publish a ratio derived from it.",
                 file=sys.stderr,
@@ -215,18 +215,18 @@ def main() -> int:
                    if l.startswith("engine:")), "unknown")
 
     p = print
-    p("# Benchmark: Bosun vs the raw `docker` CLI")
+    p("# Benchmark: Kagoni vs the raw `docker` CLI")
     p("")
     p("Generated by `benches/run.py`. Every number here is reproducible — see")
     p("[Reproducing](#reproducing).")
     p("")
     p(f"- **Tokenizer:** {TOKENIZER}")
-    p(f"- **Bosun:** {version} · **engine:** {engine}")
+    p(f"- **Kagoni:** {version} · **engine:** {engine}")
     p(f"- **Fixture:** {len(names)} containers from `benches/fixtures/bench-stack.compose.yml`")
     p("")
     p("## Per scenario")
     p("")
-    p("| Scenario | Raw tokens | Raw calls | Bosun tokens | Bosun calls | Ratio |")
+    p("| Scenario | Raw tokens | Raw calls | Kagoni tokens | Kagoni calls | Ratio |")
     p("|---|---:|---:|---:|---:|---:|")
     for label, _q, rt, rc, bt, bc, ratio in rows:
         verdict = f"**{ratio:.1f}×**" if ratio >= 1.05 else (
@@ -236,12 +236,12 @@ def main() -> int:
       f"**{totals[2]:,}** | **{totals[3]}** | "
       f"**{totals[0]/totals[2]:.1f}×** |")
     p("")
-    p("`✗` marks a scenario where Bosun costs **more** than the CLI. Those are")
+    p("`✗` marks a scenario where Kagoni costs **more** than the CLI. Those are")
     p("here on purpose.")
     p("")
     p("## The fixed cost")
     p("")
-    p(f"Bosun's {ntools} tool schemas and handshake instructions are always-on context —")
+    p(f"Kagoni's {ntools} tool schemas and handshake instructions are always-on context —")
     p("present in every session whether or not a tool is called:")
     p("")
     p(f"| Tool schemas ({ntools} tools) | {schemas:,} tok |")
@@ -254,11 +254,11 @@ def main() -> int:
     p("Against a single fleet-health question:")
     p("")
     p(f"    raw CLI                {fleet_raw:>8,} tok")
-    p(f"    bosun (calls only)     {fleet_bos:>8,} tok    {fleet_raw/fleet_bos:.1f}x cheaper")
-    p(f"    bosun (+ resident)     {allin:>8,} tok    {fleet_raw/allin:.1f}x cheaper, all-in")
+    p(f"    kagoni (calls only)     {fleet_bos:>8,} tok    {fleet_raw/fleet_bos:.1f}x cheaper")
+    p(f"    kagoni (+ resident)     {allin:>8,} tok    {fleet_raw/allin:.1f}x cheaper, all-in")
     p("")
     p(f"Break-even is roughly **one** non-trivial container question per session. Below")
-    p("that, the schemas are pure overhead — an argument for loading Bosun where you")
+    p("that, the schemas are pure overhead — an argument for loading Kagoni where you")
     p("actually use it rather than in every project.")
     p("")
     p("## Reading this honestly")
@@ -271,12 +271,12 @@ def main() -> int:
     p("  the repetitive case; a one-shot batch job is closer to the varied one.")
     p("- **Call count matters as much as tokens.** Fewer round trips is less latency and")
     p("  fewer chances for an agent to lose the thread. Wall clock is deliberately NOT")
-    p("  reported: this harness starts a fresh Bosun process for every call, while a real")
-    p("  MCP session starts the server once, so any timing here would overstate Bosun's")
+    p("  reported: this harness starts a fresh Kagoni process for every call, while a real")
+    p("  MCP session starts the server once, so any timing here would overstate Kagoni's")
     p("  cost. Call count is the honest proxy.")
     if TOKENIZER.startswith("ESTIMATE"):
         p("- **⚠️ These are byte-count estimates, not real tokens.** Dense JSON tokenizes")
-        p("  worse than bytes/4 and log prose better, which flatters Bosun. Install")
+        p("  worse than bytes/4 and log prose better, which flatters Kagoni. Install")
         p("  `tiktoken` and re-run before quoting these anywhere.")
     p("")
     p("## Reproducing")
@@ -295,7 +295,7 @@ def main() -> int:
         order = ["Logs, repetitive", "Fleet health", "Logs, low repetition", "Container listing"]
         lines = [
             "",
-            "| Scenario | Raw CLI | Bosun | |",
+            "| Scenario | Raw CLI | Kagoni | |",
             "|---|---:|---:|---|",
         ]
         for label in order:
@@ -312,7 +312,7 @@ def main() -> int:
             lines.append(f"| {label} | {rt:,} | {bt:,} | {verdict} |")
         lines += [
             "",
-            f"Bosun's {ntools} tool schemas cost **~{resident:,} tokens resident per session** "
+            f"Kagoni's {ntools} tool schemas cost **~{resident:,} tokens resident per session** "
             "whether used or not,",
             f"so the all-in figure for one fleet-health question is {fleet_raw:,} → {allin:,}, "
             f"about **{fleet_raw / allin:.1f}×**.",

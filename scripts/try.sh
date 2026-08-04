@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Drive Bosun over stdio exactly as an MCP client does, without needing a client.
+# Drive Kagoni over stdio exactly as an MCP client does, without needing a client.
 #
 #   ./scripts/try.sh                                        # handshake + list tools
-#   ./scripts/try.sh bosun_info
+#   ./scripts/try.sh kagoni_info
 #   ./scripts/try.sh list_containers '{"all":true}'
 #   ./scripts/try.sh diagnose_container '{"id":"my-container"}'
 #   ./scripts/try.sh container_logs '{"id":"my-container","level":"error"}'
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN="${BOSUN_BIN:-$HERE/../target/release/bosun}"
+BIN="${KAGONI_BIN:-$HERE/../target/release/kagoni}"
 [ -x "$BIN" ] || { echo "build first: cargo build --release" >&2; exit 1; }
 
 TOOL="${1:-}"

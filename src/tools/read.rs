@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::bound::logs::{self, Level};
 use crate::bound::project::{self, clip, short_id, strip_leading_slash};
 use crate::bound::{bounded_json, human_age, human_bytes, now_epoch_secs};
-use crate::server::BosunServer;
+use crate::server::KagoniServer;
 use crate::tools::{engine_error, parse_since, tool_error};
 
 /// Default number of log lines to pull before clustering.
@@ -116,7 +116,7 @@ pub struct ListImagesParams {
 }
 
 #[tool_router(router = read_router, vis = "pub(crate)")]
-impl BosunServer {
+impl KagoniServer {
     /// List containers as compact rows: id, name, image, state, status, health, ports.
     ///
     /// Returns a bounded table, never raw inspect blobs. Defaults to running

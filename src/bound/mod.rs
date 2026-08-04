@@ -1,6 +1,6 @@
 //! Token-bounded I/O — the core design constraint (HANDOFF §5).
 //!
-//! Design rule of thumb from the spec: *the default response to any Bosun tool
+//! Design rule of thumb from the spec: *the default response to any Kagoni tool
 //! should be safe to put in a context window unread.* This module holds the
 //! shared machinery for keeping that promise — the final byte cap that applies
 //! to every tool result regardless of which tool produced it.
@@ -46,11 +46,11 @@ pub fn bounded_json<T: Serialize>(value: &T, tool: &str, escape_hint: &str) -> C
     );
 
     let summary = serde_json::json!({
-        "bosun_truncated": true,
+        "kagoni_truncated": true,
         "tool": tool,
         "response_bytes": json.len(),
         "cap_bytes": MAX_RESPONSE_BYTES,
-        "reason": "Response exceeded Bosun's per-call byte cap and was withheld to protect the context window.",
+        "reason": "Response exceeded Kagoni's per-call byte cap and was withheld to protect the context window.",
         "what_to_do": escape_hint,
     });
 
@@ -137,7 +137,7 @@ mod tests {
         let result = bounded_json(&huge, "test_tool", "pass tail=20");
         let parsed = result_json(&result);
 
-        assert_eq!(parsed["bosun_truncated"], true);
+        assert_eq!(parsed["kagoni_truncated"], true);
         assert_eq!(parsed["tool"], "test_tool");
         assert_eq!(parsed["what_to_do"], "pass tail=20");
         assert!(result_text(&result).len() < MAX_RESPONSE_BYTES);
@@ -150,7 +150,7 @@ mod tests {
         let parsed = result_json(&result);
 
         assert_eq!(parsed["hello"], "world");
-        assert!(parsed.get("bosun_truncated").is_none());
+        assert!(parsed.get("kagoni_truncated").is_none());
     }
 
     #[test]

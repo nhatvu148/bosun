@@ -1,6 +1,6 @@
-//! Bosun — an engine-agnostic, agent-ergonomic Docker MCP server.
+//! Kagoni — an engine-agnostic, agent-ergonomic Docker MCP server.
 //!
-//! Bosun exposes container lifecycle, logs, stats and Compose as MCP tools whose
+//! Kagoni exposes container lifecycle, logs, stats and Compose as MCP tools whose
 //! defining property is *token-bounded I/O*: every read caps and summarizes by
 //! default, every destructive write is gated, and the whole thing talks the plain
 //! Docker Engine socket so it drives Docker, OrbStack, Colima or Podman alike.
@@ -17,14 +17,14 @@ use rmcp::transport::stdio;
 use tracing_subscriber::EnvFilter;
 
 use crate::engine::client::EngineClient;
-use crate::server::BosunServer;
+use crate::server::KagoniServer;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "bosun",
+    name = "kagoni",
     version,
     about = "Engine-agnostic Docker MCP server with token-bounded I/O",
-    long_about = "Bosun is an MCP server for local container operations. It speaks the plain \
+    long_about = "Kagoni is an MCP server for local container operations. It speaks the plain \
                   Docker Engine API, so it drives Docker, OrbStack, Colima or Podman \
                   interchangeably. Reads are bounded and summarizing by default; destructive \
                   writes require dry_run or an explicit confirm token.\n\n\
@@ -40,7 +40,7 @@ struct Cli {
     #[arg(long, value_name = "LEVEL")]
     log_level: Option<String>,
 
-    /// Resolve and print the engine Bosun would bind to, then exit.
+    /// Resolve and print the engine Kagoni would bind to, then exit.
     #[arg(long)]
     check: bool,
 
@@ -48,11 +48,11 @@ struct Cli {
     ///
     /// Every write tool — start/stop/restart, pull, compose up/down, rm and
     /// exec — is removed from the tool list entirely, not merely refused. Use
-    /// this whenever Bosun points at a host you are not willing to have an
+    /// this whenever Kagoni points at a host you are not willing to have an
     /// agent change, which is most of the reasons to point it at a remote one.
     #[arg(
         long,
-        env = "BOSUN_READ_ONLY",
+        env = "KAGONI_READ_ONLY",
         value_parser = parse_bool,
         default_value_t = false,
         num_args = 0..=1,
@@ -64,7 +64,7 @@ struct Cli {
 /// Parse a boolean the way people actually write one.
 ///
 /// clap's default bool parser accepts only "true"/"false", so
-/// `BOSUN_READ_ONLY=1` — the form nearly everyone reaches for — would fail with
+/// `KAGONI_READ_ONLY=1` — the form nearly everyone reaches for — would fail with
 /// "invalid value '1'". For a safety switch that is the worst possible failure:
 /// the user believes they enabled read-only, and instead the process refuses to
 /// start at all. Accepting the usual spellings avoids a footgun on the one flag
@@ -85,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
 
     // `--check` is a human-facing one-shot, so the startup chatter that is useful
     // when serving is just noise around five lines of answer. An explicit
-    // --log-level or BOSUN_LOG still wins — asking for logs should always get
+    // --log-level or KAGONI_LOG still wins — asking for logs should always get
     // you logs, whichever subcommand you asked on.
     let level = cli
         .log_level
@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     // or the protocol is corrupted. This is the single most important line here.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_env("BOSUN_LOG").unwrap_or_else(|_| EnvFilter::new(&level)),
+            EnvFilter::try_from_env("KAGONI_LOG").unwrap_or_else(|_| EnvFilter::new(&level)),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -123,13 +123,13 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    tracing::info!("bosun {} starting on stdio", env!("CARGO_PKG_VERSION"));
+    tracing::info!("kagoni {} starting on stdio", env!("CARGO_PKG_VERSION"));
 
-    let service = BosunServer::with_mode(engine, cli.read_only)
+    let service = KagoniServer::with_mode(engine, cli.read_only)
         .serve(stdio())
         .await?;
     service.waiting().await?;
 
-    tracing::info!("bosun shutting down");
+    tracing::info!("kagoni shutting down");
     Ok(())
 }

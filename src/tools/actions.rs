@@ -10,7 +10,7 @@
 //! First real session, the agent hit the gap and reached for
 //! `Bash(docker exec …)` instead — which is the observation that changes the
 //! calculus. **Omitting exec did not prevent exec.** It pushed the agent to an
-//! unbounded, unaudited, ungated path that Bosun cannot see.
+//! unbounded, unaudited, ungated path that Kagoni cannot see.
 //!
 //! A gated exec is strictly safer than the fallback the omission was creating,
 //! so it is here: argv-only (never a shell string), output-bounded, timeout-
@@ -33,13 +33,13 @@ use serde::Deserialize;
 use crate::bound::bounded_json;
 use crate::bound::project::{clip, short_id, strip_leading_slash};
 use crate::safety::{self, Guarded};
-use crate::server::BosunServer;
+use crate::server::KagoniServer;
 use crate::tools::{engine_error, tool_error};
 
 /// Default grace period before SIGKILL, matching the Docker CLI.
 const DEFAULT_STOP_TIMEOUT: i32 = 10;
 
-/// Default seconds an exec may run before Bosun stops reading and reports a timeout.
+/// Default seconds an exec may run before Kagoni stops reading and reports a timeout.
 const DEFAULT_EXEC_TIMEOUT: u64 = 30;
 /// Ceiling on the exec timeout, so a stuck command can't pin the server forever.
 const MAX_EXEC_TIMEOUT: u64 = 300;
@@ -111,7 +111,7 @@ pub struct ExecParams {
 }
 
 #[tool_router(router = actions_router, vis = "pub(crate)")]
-impl BosunServer {
+impl KagoniServer {
     /// Start a stopped container.
     #[tool(
         name = "container_start",
@@ -606,7 +606,7 @@ impl BosunServer {
     }
 }
 
-impl BosunServer {
+impl KagoniServer {
     /// Re-inspect after a lifecycle change so the caller sees the real outcome
     /// rather than having to trust that the call did what it said.
     async fn state_after(&self, id: &str, action: &str) -> CallToolResult {

@@ -30,7 +30,7 @@ use crate::bound::bounded_json;
 use crate::bound::project::{clip, strip_leading_slash};
 use crate::engine::client::EngineClient;
 use crate::safety::{self, Guarded};
-use crate::server::BosunServer;
+use crate::server::KagoniServer;
 use crate::tools::tool_error;
 
 /// Compose's own labels. These are how Compose itself identifies a stack, so
@@ -93,7 +93,7 @@ fn default_true() -> bool {
 }
 
 #[tool_router(router = compose_router, vis = "pub(crate)")]
-impl BosunServer {
+impl KagoniServer {
     /// Per-service state and health for a Compose project.
     #[tool(
         name = "compose_ps",
@@ -310,7 +310,7 @@ impl BosunServer {
     }
 }
 
-impl BosunServer {
+impl KagoniServer {
     /// Find where to run compose from.
     ///
     /// Compose records the directory it was invoked in as a container label, so
@@ -332,7 +332,7 @@ impl BosunServer {
             .ok_or_else(|| {
                 format!(
                     "cannot determine a working directory for compose project '{project}'. \
-                     Pass working_dir explicitly — Bosun can only infer it for a project \
+                     Pass working_dir explicitly — Kagoni can only infer it for a project \
                      that has been started before."
                 )
             })

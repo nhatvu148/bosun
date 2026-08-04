@@ -33,7 +33,7 @@ impl EngineClient {
         // `connect_with_defaults()` here, which reads DOCKER_HOST from the
         // environment and therefore *ignored* the address entirely: passing
         // `--socket tcp://remote:2375` connected to the local daemon while
-        // `bosun_info` cheerfully reported the remote one. Being wrong about
+        // `kagoni_info` cheerfully reported the remote one. Being wrong about
         // which daemon you are driving is the single most dangerous thing this
         // server can do, since every destructive tool acts on that answer.
         let docker = if is_remote(&endpoint.address) {
@@ -174,8 +174,8 @@ pub enum ConnectError {
     /// scheme works and the variant would be dead code.
     #[cfg(not(feature = "remote"))]
     // Names the feature rather than a package, deliberately. An earlier version
-    // said `cargo install bosun-mcp`, a crate that does not exist yet, and the
-    // obvious correction — `cargo install bosun` — is worse: that name is a
+    // said `cargo install kagoni-mcp`, a crate that does not exist yet, and the
+    // obvious correction — `cargo install kagoni` — is worse: that name is a
     // squatted v0.0.0-reserved placeholder on crates.io, so it would install a
     // stranger's empty crate instead of failing. Instructions that name a
     // feature stay correct however the reader obtained the binary.

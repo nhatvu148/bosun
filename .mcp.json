@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "bosun": {
-      "command": "./target/release/bosun",
+    "kagoni": {
+      "command": "./target/release/kagoni",
       "args": []
     }
   }

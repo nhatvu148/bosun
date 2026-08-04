@@ -1,14 +1,20 @@
 [package]
-name = "bosun"
+name = "kagoni"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Engine-agnostic, agent-ergonomic Docker MCP server with token-bounded I/O"
 authors = ["Nhat-Vu <nhatvu148@gmail.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/nhatvu148/bosun"
+repository = "https://github.com/nhatvu148/kagoni"
 keywords = ["mcp", "docker", "containers", "agent", "llm"]
 categories = ["command-line-utilities", "development-tools"]
+
+# The crate is kagoni; so is the binary. Stated explicitly so a future
+# crate rename cannot silently change the command people type.
+[[bin]]
+name = "kagoni"
+path = "src/main.rs"
 
 [features]
 default = []

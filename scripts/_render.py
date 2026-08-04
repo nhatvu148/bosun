@@ -1,4 +1,4 @@
-"""Render Bosun's JSON-RPC replies for scripts/try.sh. Not part of the server."""
+"""Render Kagoni's JSON-RPC replies for scripts/try.sh. Not part of the server."""
 
 import json
 import sys

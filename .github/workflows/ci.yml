@@ -39,7 +39,7 @@ jobs:
       # -D warnings goes after `--`, so it applies to this crate only. As a
       # global RUSTFLAGS it would also deny warnings in every dependency, and
       # CI would then break on an upstream lint change that has nothing to do
-      # with Bosun — on a PR that didn't cause it.
+      # with Kagoni — on a PR that didn't cause it.
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -71,7 +71,7 @@ jobs:
         # runner image is not a contract we control.
         run: |
           set +e
-          output=$(./target/release/bosun --check 2>&1)
+          output=$(./target/release/kagoni --check 2>&1)
           status=$?
           set -e
           echo "$output"
@@ -104,7 +104,7 @@ jobs:
               echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
               echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
               sleep 3
-            } | ./target/release/bosun --log-level trace 2>/dev/null
+            } | ./target/release/kagoni --log-level trace 2>/dev/null
           )
           python3 - "$out" <<'PY'
           import json, sys
@@ -124,7 +124,7 @@ jobs:
           names = sorted(t["name"] for t in tools)
           print(f"{len(names)} tools: {', '.join(names)}")
           # Guard the safety contract at the protocol level, not just in unit tests.
-          for required in ("bosun_info", "container_rm", "container_exec", "diagnose_container"):
+          for required in ("kagoni_info", "container_rm", "container_exec", "diagnose_container"):
               if required not in names:
                   sys.exit(f"missing tool: {required}")
           for t in tools:
@@ -163,13 +163,13 @@ jobs:
 
       - name: Install tokenizer
         # Without this the harness falls back to a bytes/4 estimate, which
-        # flatters whichever side has more JSON — Bosun's. Published numbers
+        # flatters whichever side has more JSON — Kagoni's. Published numbers
         # must come from a real tokenizer.
         run: pip install tiktoken
 
       - name: Start fixture stack
         run: |
-          docker compose -p bosun-bench \
+          docker compose -p kagoni-bench \
             -f benches/fixtures/bench-stack.compose.yml up -d
           sleep 15
 
@@ -179,5 +179,5 @@ jobs:
       - name: Stop fixture stack
         if: always()
         run: |
-          docker compose -p bosun-bench \
+          docker compose -p kagoni-bench \
             -f benches/fixtures/bench-stack.compose.yml down -v

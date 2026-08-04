@@ -21,7 +21,7 @@ use crate::engine::client::EngineClient;
 /// two things an agent cannot infer from tool schemas alone: that reads are
 /// bounded by design, and that destructive writes are gated.
 const INSTRUCTIONS: &str = "\
-Bosun drives local containers over the Docker Engine API (Docker, OrbStack, Colima, Podman).
+Kagoni drives local containers over the Docker Engine API (Docker, OrbStack, Colima, Podman).
 
 Two rules govern this server:
 
@@ -34,7 +34,7 @@ Two rules govern this server:
 2. DESTRUCTIVE WRITES ARE GATED. container_rm, container_exec, and compose_down with
    volumes require either dry_run=true (preview only) or confirm=\"<exact-target-name>\".
    If this client supports elicitation, they instead ask the operator directly and no
-   token is needed — call bosun_info to see which mode is in effect. Never pass
+   token is needed — call kagoni_info to see which mode is in effect. Never pass
    force=true unless the user asked for it.
 
 For a failing container, prefer diagnose_container over reading raw logs — it returns a
@@ -47,21 +47,21 @@ containers. Fleet questions are one call, not N.";
 
 /// Appended to the handshake instructions when running read-only.
 const READ_ONLY_NOTE: &str = "\
-BOSUN IS RUNNING READ-ONLY. Only tools with no side effects are exposed. There is no
+KAGONI IS RUNNING READ-ONLY. Only tools with no side effects are exposed. There is no
 way to start, stop, restart, remove, exec into, pull for, or compose anything through
 this server — those tools are absent from the tool list, not merely refused. If the user
-asks for an action, say plainly that this Bosun instance cannot perform it and suggest
+asks for an action, say plainly that this Kagoni instance cannot perform it and suggest
 they run the command themselves; do not look for a workaround.";
 
 /// The MCP server. Cheap to clone — the engine client is shared.
 #[derive(Clone)]
-pub struct BosunServer {
+pub struct KagoniServer {
     engine: Arc<EngineClient>,
     read_only: bool,
     tool_router: ToolRouter<Self>,
 }
 
-impl BosunServer {
+impl KagoniServer {
     /// Build the server, optionally restricted to tools with no side effects.
     ///
     /// Read-only mode *removes* the write tools from the router rather than
@@ -111,17 +111,17 @@ impl BosunServer {
 }
 
 #[tool_router(router = info_router)]
-impl BosunServer {
-    /// Report which engine Bosun bound to and how it got there.
+impl KagoniServer {
+    /// Report which engine Kagoni bound to and how it got there.
     #[tool(
-        name = "bosun_info",
-        description = "Report the container engine Bosun connected to: engine name, socket address, how that \
+        name = "kagoni_info",
+        description = "Report the container engine Kagoni connected to: engine name, socket address, how that \
                        address was resolved, server and API versions, and current container counts. Call this \
-                       first when container operations behave unexpectedly — it tells you whether Bosun is \
+                       first when container operations behave unexpectedly — it tells you whether Kagoni is \
                        talking to the daemon you think it is.",
-        annotations(title = "Bosun engine info", read_only_hint = true)
+        annotations(title = "Kagoni engine info", read_only_hint = true)
     )]
-    pub async fn bosun_info(&self, context: RequestContext<RoleServer>) -> CallToolResult {
+    pub async fn kagoni_info(&self, context: RequestContext<RoleServer>) -> CallToolResult {
         let engine = self.engine();
 
         // Counts are a liveness check as much as a statistic: if this errors,
@@ -184,7 +184,7 @@ impl BosunServer {
         };
 
         let payload = serde_json::json!({
-            "bosun_version": env!("CARGO_PKG_VERSION"),
+            "kagoni_version": env!("CARGO_PKG_VERSION"),
             "engine": engine.engine().as_str(),
             "socket_path": engine.endpoint().address,
             "resolved_from": engine.endpoint().source.as_str(),
@@ -197,19 +197,19 @@ impl BosunServer {
             "read_only": self.read_only,
             "approval_mode": if self.read_only { "read_only" } else { approval_mode },
             "approval_note": if self.read_only {
-                "Bosun is running READ-ONLY. Every write tool is absent from the tool list, \
+                "Kagoni is running READ-ONLY. Every write tool is absent from the tool list, \
                  not merely refused — there is nothing to authorize."
             } else {
                 approval_note
             },
         });
 
-        bounded_json(&payload, "bosun_info", "Unexpectedly large — report this.")
+        bounded_json(&payload, "kagoni_info", "Unexpectedly large — report this.")
     }
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for BosunServer {
+impl ServerHandler for KagoniServer {
     fn get_info(&self) -> ServerInfo {
         // The handshake must say which mode is live, or an agent will keep
         // proposing actions whose tools are not there and read the absence as
@@ -228,8 +228,8 @@ impl ServerHandler for BosunServer {
         )
         .with_protocol_version(ProtocolVersion::default())
         .with_server_info(
-            Implementation::new("bosun", env!("CARGO_PKG_VERSION"))
-                .with_title("Bosun — Docker MCP server"),
+            Implementation::new("kagoni", env!("CARGO_PKG_VERSION"))
+                .with_title("Kagoni — Docker MCP server"),
         )
         .with_instructions(instructions)
     }
@@ -304,7 +304,7 @@ impl ServerHandler for BosunServer {
 /// The full tool surface, assembled exactly as `new` assembles it.
 ///
 /// Split out so tests can inspect the surface without needing a live daemon —
-/// building a `BosunServer` requires a connection, but the router does not.
+/// building a `KagoniServer` requires a connection, but the router does not.
 #[cfg(test)]
 pub(crate) fn all_tools() -> Vec<rmcp::model::Tool> {
     tool_surface(false)
@@ -313,14 +313,14 @@ pub(crate) fn all_tools() -> Vec<rmcp::model::Tool> {
 /// The tool surface for a given mode, assembled exactly as `with_mode` does.
 ///
 /// Split out so tests can inspect it without a live daemon — building a
-/// `BosunServer` needs a connection, the router does not.
+/// `KagoniServer` needs a connection, the router does not.
 #[cfg(test)]
 pub(crate) fn tool_surface(read_only: bool) -> Vec<rmcp::model::Tool> {
-    let mut router: ToolRouter<BosunServer> = BosunServer::info_router()
-        + BosunServer::read_router()
-        + BosunServer::actions_router()
-        + BosunServer::diagnose_router()
-        + BosunServer::compose_router();
+    let mut router: ToolRouter<KagoniServer> = KagoniServer::info_router()
+        + KagoniServer::read_router()
+        + KagoniServer::actions_router()
+        + KagoniServer::diagnose_router()
+        + KagoniServer::compose_router();
 
     if read_only {
         let removed: Vec<String> = router
@@ -338,7 +338,7 @@ pub(crate) fn tool_surface(read_only: bool) -> Vec<rmcp::model::Tool> {
 
 /// Resource bodies. These mirror the equivalent tools but return plain JSON, so
 /// the two paths can't drift into disagreeing about the same container.
-impl BosunServer {
+impl KagoniServer {
     async fn resource_containers(&self) -> Result<String, ErrorData> {
         let containers = self
             .engine()
@@ -504,7 +504,7 @@ mod tests {
         );
 
         // argv-only is the other half of the safety story: a shell string would
-        // mean Bosun hands user input to a shell it does not control.
+        // mean Kagoni hands user input to a shell it does not control.
         let cmd = exec.input_schema["properties"]["cmd"].clone();
         assert_eq!(
             cmd["type"], "array",
@@ -601,7 +601,7 @@ mod read_only_tests {
             .collect();
 
         for tool in [
-            "bosun_info",
+            "kagoni_info",
             "list_containers",
             "inspect_container",
             "container_logs",
