@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "kagoni": {
+      "command": "./target/release/kagoni",
+      "args": []
+    },
+
+    "_comment": "Copy this file to .mcp.json, which is gitignored. Real endpoints go there and are never committed. A remote example, read-only, which is what you want when pointing an agent at a host you are not willing to have it change:",
+
+    "kagoni-prod-example": {
+      "command": "kagoni",
+      "args": ["--socket", "ssh://user@your-host"],
+      "env": { "KAGONI_READ_ONLY": "1" }
+    }
+  }
+}
