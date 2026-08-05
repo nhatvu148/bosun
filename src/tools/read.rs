@@ -274,8 +274,10 @@ impl KagoniServer {
         description = "Container logs as a BOUNDED cluster digest, not a firehose. Pulls tail=200 lines by \
                        default (max 5000) and groups near-identical lines by a normalized skeleton — so 500 \
                        repeated stacktraces return as ONE cluster with count, first_seen and last_seen. \
-                       Clusters are ranked severity-first, max 12 by default. ANSI escapes are stripped \
-                       before clustering. Filter with since ('5m'), grep, or level ('error') — but grep and \
+                       Clusters are ranked severity-first, max 12 by default. Singleton clusters omit \
+                       `template` — for a group of one it duplicates `sample`. ANSI escapes are stripped \
+                       before clustering, and paths are normalized per segment (slugs and hashes become \
+                       <SLUG> / <HEX>). Filter with since ('5m'), grep, or level ('error') — but grep and \
                        level are applied AFTER the tail is fetched, so they shrink the RESPONSE, not the \
                        work. To make a SLOW call faster, narrow with since or a smaller tail; adding a \
                        filter will not help. Fetching is deadlined (default 15s, raise with timeout); on a \
@@ -364,11 +366,19 @@ impl KagoniServer {
         }
 
         // A stream error with nothing salvaged is a real failure. With lines in
-        // hand, partial data beats an error the agent can do nothing with.
-        if let Some(e) = stream_error
-            && lines.is_empty()
-        {
-            return engine_error("container_logs failed", &params.id, e);
+        // hand, partial data beats an error the agent can do nothing with — but
+        // the error still gets logged, or a mid-drain failure vanishes entirely
+        // and the truncation looks like the log simply ended there.
+        if let Some(e) = stream_error {
+            if lines.is_empty() {
+                return engine_error("container_logs failed", &params.id, e);
+            }
+            tracing::debug!(
+                %e,
+                id = %params.id,
+                lines = lines.len(),
+                "log stream errored mid-drain; returning the lines already collected"
+            );
         }
 
         let total_pulled = lines.len();

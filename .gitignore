@@ -6,3 +6,7 @@
 # Python bytecode from the benchmark harness
 __pycache__/
 *.pyc
+
+# Local MCP overrides. Real endpoints belong here, never in the tracked
+# .mcp.json — a production host committed to a public repo cannot be recalled.
+.mcp.local.json
