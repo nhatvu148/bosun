@@ -1,0 +1,270 @@
+# Hostile fixture stack — environmental edge cases, not content edge cases.
+#
+# bench-stack.compose.yml already varies log *content* rigorously: repetition
+# vs variety, crash signal, quiet containers, and it deliberately avoids
+# rigging the low-repetition case. What it does not vary is everything
+# *around* the content — byte encoding, volume, line length, age.
+#
+# Every one of those bit us in the field (see docs/FIELD-REPORT-2026-08-05.md):
+# ANSI escapes broke clustering, an unrotated multi-day log made `tail` hang,
+# and neither was visible against a fresh local stack of plain `echo` output.
+#
+# DELIBERATELY A SEPARATE FILE. Adding these services to bench-stack would
+# change the container count and invalidate the published numbers in
+# docs/BENCHMARK.md. Run this one on its own:
+#
+#   docker compose -p kagoni-hostile -f benches/fixtures/hostile-stack.compose.yml up -d
+#   # ...exercise container_logs against each service...
+#   docker compose -p kagoni-hostile -f benches/fixtures/hostile-stack.compose.yml down
+#
+# DISK: `firehose` writes 500k lines — measured at ~28MB of log payload
+# (`docker logs kagoni-hostile-firehose | wc -c`), larger on disk once the
+# json-file driver adds its per-line JSON envelope. It stops on its own, and
+# nothing here uses `restart: always`, so a forgotten stack cannot grow
+# without bound.
+#
+# All seven services were verified end-to-end on busybox:latest / OrbStack.
+# If you change the base image, re-check `coloured`, `binary`, `webserver` and
+# `needle` — all four depend on busybox awk's byte-level sprintf behaviour for
+# characters that do not survive the YAML -> compose -> sh chain as escapes.
+
+services:
+  # ── ANSI-coloured structured logs ────────────────────────────────────────
+  # What tracing / zap / logrus / pino actually emit when stdout is a tty, and
+  # what every Rust service using tracing-subscriber emits by default.
+  #
+  # This is a REGRESSION TEST, not just a sample. The INFO and WARN lines are
+  # the same sentence with the same shape — they differ only in the colour
+  # code (32 vs 33). Correct behaviour is for them to collapse to ~2 clusters.
+  #
+  #   without ANSI stripping: many clusters, and templates full of
+  #                           `[<NUM>m<NUM>-<NUM>-<NUM>T...` noise
+  #   with ANSI stripping:    ~2 clusters, readable templates
+  #
+  # If distinct_clusters is anywhere near lines_scanned, the strip is missing.
+  coloured:
+    image: busybox:latest
+    container_name: kagoni-hostile-coloured
+    restart: "no"
+    # ESC is produced with awk's sprintf("%c",27) rather than a printf '\033'
+    # escape. A literal backslash does not survive the YAML-folding ->
+    # compose -> sh chain intact (it arrives as the four characters `033`),
+    # so the colour codes silently degrade to plain text and the fixture
+    # stops testing the thing it exists to test. Verify with:
+    #   docker logs kagoni-hostile-coloured | cat -v | head -1
+    # and expect `^[[2m`, not `033[2m`.
+    # `print` with string concatenation, not printf: a `\n` in a format string
+    # does not survive the YAML/compose/sh chain any more than `\033` does.
+    command: >
+      sh -c "awk 'BEGIN{ e=sprintf(\"%c\",27); d=e \"[2m\"; r=e \"[0m\";
+                         for(i=1;i<=200;i++){
+                           print d \"2026-01-01T00:00:00.000000Z\" r \" \" e \"[32m INFO\" r \" \" d \"app::db\" r d \":\" r \" query id=\" i \" completed in \" i \"ms\";
+                           if(i%5==0)
+                             print d \"2026-01-01T00:00:00.000000Z\" r \" \" e \"[33m WARN\" r \" \" d \"app::db\" r d \":\" r \" query id=\" i \" completed in \" i*100 \"ms\";
+                         } }';
+             sleep 3600"
+
+  # ── Unbounded log volume ─────────────────────────────────────────────────
+  # The erp-postgres shape: json-file with no max-size, no max-file, filled by
+  # something noisy (there, a brute-force attack; here, a loop).
+  #
+  # This does NOT test clustering — the content is trivially repetitive. It
+  # tests whether `tail=N` still returns promptly once the underlying log is
+  # large. In the field, tail=400 against a log of this shape exceeded 120s
+  # over an SSH socket and returned nothing at all.
+  #
+  # awk rather than a shell loop: 500k iterations of busybox sh takes minutes.
+  firehose:
+    image: busybox:latest
+    container_name: kagoni-hostile-firehose
+    restart: "no"
+    logging:
+      driver: json-file
+      # No max-size / max-file, on purpose. This is the misconfiguration we
+      # want to be able to detect and survive, not one to fix in the fixture.
+    command: >
+      sh -c "awk 'BEGIN{ for(i=1;i<=500000;i++)
+                           print \"connection from 10.0.0.\" i%255 \" rejected: authentication failed\" }';
+             sleep 3600"
+
+  # ── Pathological single line ─────────────────────────────────────────────
+  # One 64KB line, the shape you get when a service logs a serialized payload
+  # or a full HTTP body on error. A cluster that picks this as its `sample`
+  # blows the entire response budget on one line.
+  #
+  # Correct behaviour: `sample` is truncated with an ellipsis.
+  longline:
+    image: busybox:latest
+    container_name: kagoni-hostile-longline
+    restart: "no"
+    command: >
+      sh -c "awk 'BEGIN{ s=\"\"; while(length(s)<65536) s=s \"x\";
+                         print \"ERROR upstream rejected payload=\" s }';
+             echo 'normal line after the big one';
+             sleep 3600"
+
+  # ── Multi-line stack traces ──────────────────────────────────────────────
+  # Docker delivers each line separately, so one logical event arrives as ~8
+  # unrelated lines. Indented continuation frames normalize to near-identical
+  # skeletons, which can either cluster usefully or swamp the digest.
+  #
+  # No single right answer here — the point is to see what the digest does to
+  # a stack trace before a user reports it.
+  multiline:
+    image: busybox:latest
+    container_name: kagoni-hostile-multiline
+    restart: "no"
+    command: >
+      sh -c "i=0;
+             while [ \$$i -lt 10 ]; do
+               i=\$$((i+1));
+               echo \"ERROR unhandled exception in request \$$i\" >&2;
+               echo \"  at com.example.service.OrderHandler.process(OrderHandler.java:142)\" >&2;
+               echo \"  at com.example.service.OrderHandler.handle(OrderHandler.java:88)\" >&2;
+               echo \"  at com.example.http.Router.dispatch(Router.java:301)\" >&2;
+               echo \"  at java.base/java.lang.Thread.run(Thread.java:840)\" >&2;
+               echo \"Caused by: java.sql.SQLException: connection pool exhausted\" >&2;
+               echo \"  ... 12 more\" >&2;
+             done;
+             sleep 3600"
+
+  # ── Invalid UTF-8 (and what it actually proves) ──────────────────────────
+  # MEASURED, not assumed: the container emits raw 0xff 0xfe 0xfd 0xfc, but
+  # `docker logs` returns ef bf bd ×4 — U+FFFD. The json-file driver stores
+  # entries as JSON, JSON demands valid UTF-8, so the daemon sanitizes at
+  # WRITE time. Invalid bytes never reach kagoni through this driver at all.
+  #
+  # So this does NOT exercise String::from_utf8_lossy in container_logs; that
+  # path is likely unreachable for json-file and only matters for drivers that
+  # pass bytes through untouched. What it does test is that a line dense with
+  # replacement characters still normalizes, clusters and serializes cleanly
+  # rather than producing a broken template or invalid JSON output.
+  #
+  # If you want a genuine from_utf8_lossy test, drive it at the unit level in
+  # src/bound/logs.rs instead — a fixture cannot get invalid bytes past the
+  # daemon.
+  binary:
+    image: busybox:latest
+    container_name: kagoni-hostile-binary
+    restart: "no"
+    # awk sprintf("%c",255) rather than printf '\xff' — same backslash-stripping
+    # trap as `coloured`. busybox awk emits a raw 0xff byte here (verified with
+    # xxd); gawk in a UTF-8 locale would encode U+00FF instead, so keep this on
+    # busybox if you change the base image.
+    command: >
+      sh -c "awk 'BEGIN{ b=sprintf(\"%c%c%c%c\",255,254,253,252);
+                         print \"valid line before\";
+                         print \"binary follows: \" b \" invalid utf8 sequence\";
+                         print \"valid line after\" }';
+             sleep 3600"
+
+  # ── Identifiers inside URL path tokens ───────────────────────────────────
+  # The single most common thing anyone will point container_logs at is a web
+  # server, and this is what a web server's error log does to the clusterer.
+  #
+  # MEASURED IN THE FIELD, 2026-08-05: 130 nginx rate-limit lines produced
+  # **60 distinct clusters**. They are one event — "request rejected by
+  # limit_req" — logged over and over. What split them is that the varying part
+  # is a path SEGMENT, and normalize() splits on whitespace, so the token it
+  # inspects is the whole `/api/reader/texts/binh-ngo-dai-cao`, never the slug
+  # alone. is_uuid/is_long_hex/is_ip all take a bare token, so none of them
+  # fire, and only replace_digit_runs touches it.
+  #
+  # Two failure shapes, both reproduced here:
+  #
+  #  1. Hyphenated slugs (`binh-ngo-dai-cao`) carry no digits, so they survive
+  #     normalization completely and each one becomes its own cluster. Worse,
+  #     they normalize INCONSISTENTLY with siblings that happen to contain a
+  #     number — `truyen-kieu-1902` becomes `truyen-kieu-<NUM>` — so two lines
+  #     of identical shape land in different groups for arbitrary reasons.
+  #
+  #  2. A 32-char hex hash inside a path (`/api/glyph/843311ff4b83...png`) is
+  #     not seen by is_long_hex either, and replace_digit_runs shreds it into
+  #     `<NUM>ff<NUM>b<NUM>ac<NUM>b<NUM>a<NUM>ad<NUM>e<NUM>.png` — a template
+  #     that is both unreadable AND still unique per hash.
+  #
+  # Correct behaviour: 2 clusters (one text-fetch shape, one glyph shape).
+  # MEASURED behaviour, 2026-08-05, 260 lines: **12 clusters**.
+  #
+  # One result in that run is worth more than the count. `truyen-kieu-1902` and
+  # `truyen-kieu-1870` DID merge, into a single cluster of 40 — because both
+  # normalize to `truyen-kieu-<NUM>`. The nine slugs with no digit in them did
+  # not merge with anything. So whether two structurally identical lines group
+  # together depends on whether their slug happens to contain a number, which
+  # is not a property anyone would predict or want.
+  #
+  # The signal to watch is distinct_clusters climbing with input variety when
+  # the underlying event count has not changed.
+  #
+  # Fixing this means normalizing per path segment rather than per whitespace
+  # token — splitting a token on `/` before classifying each part.
+  webserver:
+    image: busybox:latest
+    container_name: kagoni-hostile-webserver
+    restart: "no"
+    # sprintf("%c",34) for the literal double quotes nginx writes around the
+    # request line: a backslash-escaped quote does not survive the YAML ->
+    # compose -> sh chain, same trap as `coloured` and `binary`.
+    command: >
+      sh -c "awk 'BEGIN{
+               q=sprintf(\"%c\",34);
+               n=split(\"binh-ngo-dai-cao truyen-kieu-1902 truyen-kieu-1870 hich-tuong-si kinh-tin kinh-tin-kinh luc-van-tien nam-quoc-son-ha phat-tong-lo-bo-van thien-truong-van-vong\", slug, \" \");
+               m=split(\"843311ff4b837ac2118b201a4ad32e11 b18d04e2b96ce9ac91fce1c4482ed2cd 7c21168373cff99f32ee4a4593bd931a\", hash, \" \");
+               for(i=1;i<=200;i++)
+                 print \"2026/08/05 14:34:49 [error] 35#35: *\" (894000+i) \" limiting requests, excess: 20.\" (100+i%90) \" by zone \" q \"api_limit\" q \", client: 162.158.108.\" (i%254) \", server: api.example.com, request: \" q \"GET /api/reader/texts/\" slug[(i%n)+1] \" HTTP/1.1\" q;
+               for(i=1;i<=60;i++)
+                 print \"2026/08/05 14:35:12 [error] 35#35: *\" (895000+i) \" limiting requests, excess: 20.\" (i%90) \" by zone \" q \"api_limit\" q \", client: 172.69.176.\" (i%254) \", server: api.example.com, request: \" q \"GET /api/glyph/\" hash[(i%m)+1] \".png HTTP/1.1\" q;
+             }';
+             sleep 3600"
+
+  # ── One critical line under 10k mundane ones ─────────────────────────────
+  # Severity ranking exists so that a singleton can beat a high-count cluster.
+  # This is the case that proves it does, and it is drawn from the incident
+  # that made the point expensively.
+  #
+  # On 2026-08-05 an nginx config reload reported success — `nginx -t` passed,
+  # `nginx -s reload` printed "signal process started" — while the master threw
+  # the new config away and kept serving the old one. The ONLY evidence was a
+  # single [emerg] line, buried in an access log doing thousands of lines an
+  # hour. Finding it is what ended a wrong diagnosis; a digest that dropped it
+  # would have prolonged one.
+  #
+  # Correct behaviour: at the DEFAULT max_clusters=12, the [emerg] cluster
+  # (count=1) is present in `clusters`, ranked above the 200-response cluster
+  # (count=4000). If it is missing, severity-first ordering is losing to
+  # frequency somewhere, and the tool cannot be trusted for the job people will
+  # actually reach for it to do.
+  #
+  # MEASURED 2026-08-05: PASSES. 2 clusters, the [emerg] first at level
+  # "fatal" (count 1), the access log second at "info" (count 4000). This is a
+  # regression guard for behaviour that is already right, not a known defect.
+  #
+  # Also worth checking: `level="error"` should reduce this to essentially the
+  # one line, which is the cheap way to find a needle when you already suspect
+  # one exists.
+  #
+  # SIZED 2000/1/2000 ON PURPOSE. An earlier draft used 5000/1/5000, which put
+  # the [emerg] at line 5001 of 10001 — one line outside a MAX_TAIL=5000 window,
+  # so the fixture failed for a reason that had nothing to do with ranking.
+  # That is worth knowing in its own right: a needle older than the tail window
+  # is invisible, and nothing in the response says the window was the reason.
+  # `lines_pulled == tail` is the only hint, and it is easy to read as "there
+  # were exactly that many lines". Test the ranking here; test the window with
+  # `firehose`.
+  needle:
+    image: busybox:latest
+    container_name: kagoni-hostile-needle
+    restart: "no"
+    # sprintf("%c",36) for '$'. The -c string is expanded by sh, so a literal
+    # $binary_remote_addr would arrive as an empty string and quietly destroy
+    # the very line this fixture exists to find.
+    command: >
+      sh -c "awk 'BEGIN{
+               q=sprintf(\"%c\",34); d=sprintf(\"%c\",36);
+               for(i=1;i<=2000;i++)
+                 print \"10.0.0.\" (i%254) \" - - [05/Aug/2026:14:02:29 +0000] \" q \"GET /health HTTP/1.1\" q \" 200 90\";
+               print \"2026/08/05 10:37:43 [emerg] 1#1: limit_req \" q \"api_limit\" q \" uses the \" q d \"binary_remote_addr\" q \" key while previously it used the \" q d \"client_real_ip\" q \" key\";
+               for(i=1;i<=2000;i++)
+                 print \"10.0.0.\" (i%254) \" - - [05/Aug/2026:14:02:30 +0000] \" q \"GET /health HTTP/1.1\" q \" 200 90\";
+             }';
+             sleep 3600"

@@ -98,6 +98,11 @@ With an explicit socket and debug logging:
 
 Then `/mcp` in Claude Code should list kagoni with 18 tools.
 
+> **Keep real endpoints out of the tracked `.mcp.json`.** Put anything naming a real
+> host — `ssh://user@host`, a remote `DOCKER_HOST` — in `.mcp.local.json`, which is
+> gitignored. A production hostname committed to a public repo cannot be recalled, and
+> `git add -A` will sweep one in without asking.
+
 See [docs/prompts.md](docs/prompts.md) for things to ask it, grouped by what each one
 exercises — including a set for attacking the write-safety gate.
 

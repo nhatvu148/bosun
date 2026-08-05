@@ -28,6 +28,15 @@ use crate::tools::tool_error;
 /// without turning a diagnosis into a log dump.
 const DIAGNOSTIC_TAIL: i32 = 300;
 
+/// Seconds to spend sampling logs during a diagnosis.
+///
+/// Shorter than `container_logs`' deadline on purpose. A fleet-wide
+/// `diagnose_container(ids=["*"])` fans out concurrently, so a slow host would
+/// otherwise multiply one stall across every container at once; and log clusters
+/// are supporting evidence here, not the answer. Exit code, OOM state, restart
+/// count and healthcheck history all still arrive.
+const DIAGNOSTIC_LOG_TIMEOUT: u64 = 8;
+
 /// Restart count above which we call it a crash loop rather than a blip.
 const CRASH_LOOP_THRESHOLD: i64 = 3;
 
@@ -353,18 +362,41 @@ impl KagoniServer {
         let mut stream = self.engine().docker().logs(id, Some(options));
         let mut lines = Vec::new();
 
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(output) => {
-                    let stderr = matches!(output, bollard::container::LogOutput::StdErr { .. });
-                    let text = String::from_utf8_lossy(output.as_ref()).into_owned();
-                    lines.extend(logs::parse_lines(&text, stderr));
+        // Deadlined for the same reason as `container_logs`, and more urgently:
+        // this is the tool an agent reaches for FIRST on a sick container, and a
+        // sick container is exactly where a log stream stalls. Hanging here means
+        // hanging on the very call meant to explain the problem. Shorter than the
+        // read tool's default because this is sampling for signal, not fetching
+        // a result the caller asked for — a diagnosis with fewer log clusters is
+        // still a diagnosis.
+        let drained = tokio::time::timeout(
+            std::time::Duration::from_secs(DIAGNOSTIC_LOG_TIMEOUT),
+            async {
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(output) => {
+                            let stderr =
+                                matches!(output, bollard::container::LogOutput::StdErr { .. });
+                            let text = String::from_utf8_lossy(output.as_ref()).into_owned();
+                            lines.extend(logs::parse_lines(&text, stderr, true));
+                        }
+                        Err(e) => {
+                            tracing::debug!(%e, id, "log sampling failed during diagnosis");
+                            return;
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::debug!(%e, id, "log sampling failed during diagnosis");
-                    break;
-                }
-            }
+            },
+        )
+        .await;
+
+        if drained.is_err() {
+            tracing::warn!(
+                id,
+                deadline = DIAGNOSTIC_LOG_TIMEOUT,
+                lines = lines.len(),
+                "log sampling hit its deadline; diagnosing on partial log evidence"
+            );
         }
 
         // Keep only what a diagnosis can use: warn and above.
@@ -1086,7 +1118,7 @@ mod tests {
 
     fn error_cluster(sample: &str, count: usize, level: Level) -> Cluster {
         Cluster {
-            template: sample.to_string(),
+            template: Some(sample.to_string()),
             sample: sample.to_string(),
             count,
             level,

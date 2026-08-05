@@ -31,6 +31,15 @@ const DEFAULT_MAX_CLUSTERS: usize = 12;
 const MAX_RAW_LINES: usize = 500;
 /// Per-line clip in raw mode; a single JSON blob line can be enormous.
 const MAX_RAW_LINE_CHARS: usize = 2_000;
+/// Seconds to spend draining a log stream before returning what arrived.
+///
+/// Deliberately far below a typical MCP client budget. A call that has produced
+/// nothing in 15s on a healthy host will not produce anything useful in 120s,
+/// and the agent is better served by partial data plus a hint than by a hang.
+const DEFAULT_LOG_TIMEOUT: u64 = 15;
+/// Ceiling on the caller-supplied deadline, so no call can outlive a client.
+const MAX_LOG_TIMEOUT: u64 = 120;
+
 /// Default cap on rows returned by listing tools.
 const DEFAULT_LIST_LIMIT: usize = 100;
 
@@ -93,6 +102,10 @@ pub struct ContainerLogsParams {
     /// Max distinct clusters to return. Default 12.
     #[serde(default)]
     pub max_clusters: Option<usize>,
+    /// Seconds to spend fetching before returning partial results. Default 15,
+    /// max 120. Raise only if you know the container's log is large and slow.
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -261,8 +274,15 @@ impl KagoniServer {
         description = "Container logs as a BOUNDED cluster digest, not a firehose. Pulls tail=200 lines by \
                        default (max 5000) and groups near-identical lines by a normalized skeleton — so 500 \
                        repeated stacktraces return as ONE cluster with count, first_seen and last_seen. \
-                       Clusters are ranked severity-first, max 12 by default. Filter with since ('5m'), grep, \
-                       or level ('error'). Pass raw=true for individual lines instead (capped at 500).",
+                       Clusters are ranked severity-first, max 12 by default. Singleton clusters omit \
+                       `template` — for a group of one it duplicates `sample`. ANSI escapes are stripped \
+                       before clustering, and paths are normalized per segment (slugs and hashes become \
+                       <SLUG> / <HEX>). Filter with since ('5m'), grep, or level ('error') — but grep and \
+                       level are applied AFTER the tail is fetched, so they shrink the RESPONSE, not the \
+                       work. To make a SLOW call faster, narrow with since or a smaller tail; adding a \
+                       filter will not help. Fetching is deadlined (default 15s, raise with timeout); on a \
+                       deadline you get partial results with timed_out=true. Pass raw=true for individual \
+                       lines instead (capped at 500, escapes preserved).",
         annotations(title = "Container logs (clustered)", read_only_hint = true)
     )]
     pub async fn container_logs(
@@ -302,16 +322,63 @@ impl KagoniServer {
             .docker()
             .logs(&params.id, Some(builder.build()));
 
+        let deadline = params
+            .timeout
+            .unwrap_or(DEFAULT_LOG_TIMEOUT)
+            .clamp(1, MAX_LOG_TIMEOUT);
+
         let mut lines: Vec<logs::LogLine> = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(output) => {
-                    let stderr = matches!(output, bollard::container::LogOutput::StdErr { .. });
-                    let text = String::from_utf8_lossy(output.as_ref()).into_owned();
-                    lines.extend(logs::parse_lines(&text, stderr));
+        let mut stream_error = None;
+
+        // Drain under a wall-clock deadline, keeping whatever arrived.
+        //
+        // bollard's connection timeout bounds the *request*, not the draining of
+        // a streaming response body — which is why a call in the field ran for
+        // 1800s with a 120s timeout in force and returned nothing. If the stream
+        // stalls between chunks (half-open tunnel, loaded host, daemon gone
+        // quiet) this loop would otherwise await forever, and the client is left
+        // to give up. Kagoni decides when to stop.
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(deadline), async {
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(output) => {
+                        let stderr = matches!(output, bollard::container::LogOutput::StdErr { .. });
+                        let text = String::from_utf8_lossy(output.as_ref()).into_owned();
+                        lines.extend(logs::parse_lines(&text, stderr, !params.raw));
+                    }
+                    Err(e) => {
+                        stream_error = Some(e);
+                        return;
+                    }
                 }
-                Err(e) => return engine_error("container_logs failed", &params.id, e),
             }
+        })
+        .await;
+
+        let timed_out = drained.is_err();
+        if timed_out {
+            tracing::warn!(
+                id = %params.id,
+                deadline,
+                lines = lines.len(),
+                "container_logs hit its deadline; returning partial results"
+            );
+        }
+
+        // A stream error with nothing salvaged is a real failure. With lines in
+        // hand, partial data beats an error the agent can do nothing with — but
+        // the error still gets logged, or a mid-drain failure vanishes entirely
+        // and the truncation looks like the log simply ended there.
+        if let Some(e) = stream_error {
+            if lines.is_empty() {
+                return engine_error("container_logs failed", &params.id, e);
+            }
+            tracing::debug!(
+                %e,
+                id = %params.id,
+                lines = lines.len(),
+                "log stream errored mid-drain; returning the lines already collected"
+            );
         }
 
         let total_pulled = lines.len();
@@ -347,7 +414,17 @@ impl KagoniServer {
                 "lines_returned": shown.len(),
                 "lines_omitted": (omitted > 0).then_some(omitted),
                 "lines": shown,
-                "note": "raw mode is still capped at 500 lines. Drop raw=true for the clustered digest.",
+                "timed_out": timed_out,
+                "note": if timed_out {
+                    format!(
+                        "DEADLINE: stopped fetching after {deadline}s and returned what had arrived. \
+                         Narrow with since=\"5m\" or a smaller tail, or raise timeout (max {MAX_LOG_TIMEOUT}). \
+                         raw mode is capped at {MAX_RAW_LINES} lines."
+                    )
+                } else {
+                    format!("raw mode is capped at {MAX_RAW_LINES} lines. Drop raw=true for the clustered digest. \
+                             ANSI escapes are preserved in raw mode; the clustered digest strips them.")
+                },
             });
             return bounded_json(
                 &payload,
@@ -366,9 +443,20 @@ impl KagoniServer {
             "distinct_clusters": summary.distinct_clusters,
             "clusters_omitted": summary.clusters_omitted,
             "clusters": summary.clusters,
-            "note": "Clusters group near-identical lines by a normalized skeleton; \
-                     'count' is occurrences within the scanned window. Levels are inferred \
-                     from line text, not a structured field. Pass raw=true for individual lines.",
+            "timed_out": timed_out,
+            "note": if timed_out {
+                format!(
+                    "DEADLINE: stopped fetching after {deadline}s and clustered what had arrived, \
+                     so counts are a lower bound. Narrow with since=\"5m\" or a smaller tail, or \
+                     raise timeout (max {MAX_LOG_TIMEOUT})."
+                )
+            } else {
+                "Clusters group near-identical lines by a normalized skeleton; 'count' is \
+                 occurrences within the scanned window. Levels are inferred from line text, not a \
+                 structured field. ANSI escapes are stripped before clustering. Pass raw=true for \
+                 individual lines."
+                    .to_string()
+            },
         });
 
         bounded_json(
