@@ -1,8 +1,13 @@
 {
   "mcpServers": {
     "kagoni": {
-      "command": "./target/release/kagoni",
+      "command": "kagoni",
       "args": []
+    },
+    "kagoni-prod": {
+      "command": "kagoni",
+      "args": ["--socket", "ssh://root@172.236.131.47"],
+      "env": { "KAGONI_READ_ONLY": "1" }
     }
   }
 }
