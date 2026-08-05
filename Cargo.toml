@@ -1,6 +1,6 @@
 [package]
 name = "kagoni"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Engine-agnostic, agent-ergonomic Docker MCP server with token-bounded I/O"
