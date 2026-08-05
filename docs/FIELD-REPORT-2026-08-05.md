@@ -104,9 +104,7 @@ are *not* the fix — stripping ANSI is.
 - **Add a low-repetition guard only if it still reproduces after the ANSI fix.**
   Re-measure first; the benchmark suggests it won't.
 
-**Worth adding to `benches/`:** a fixture that emits ANSI-coloured structured
-logs. The existing suite would have caught this if one container in
-`bench-stack.compose.yml` logged in colour, which most real apps do.
+**Added:** `benches/fixtures/hostile-stack.compose.yml` — see §7.
 
 ---
 
@@ -209,6 +207,62 @@ Worth keeping in mind while changing things:
   description.
 
 ---
+
+## 7. The fixture gap — and a stack to close it
+
+`bench-stack.compose.yml` is rigorous about log **content**. The comments prove
+it: a first attempt at the low-repetition case normalized to a single cluster
+and made the supposed worst case look like a 27× win, and that got caught and
+rewritten into 20 distinct message shapes. That is real anti-rigging discipline
+and it is why the published numbers are trustworthy.
+
+What it does not vary is everything *around* the content:
+
+| axis | `bench-stack` | reality |
+|---|---|---|
+| repetition / variety | ✅ deliberate, un-rigged | — |
+| crash + restart signal | ✅ `crashloop`, `oom` | — |
+| low-value case | ✅ `quiet-1..3`, 0.44× published | — |
+| byte encoding | ❌ plain `echo` | ANSI colour by default |
+| volume | ❌ ≤600 lines | days of unrotated json-file |
+| line length | ❌ short | 64KB serialized payloads |
+| transport | ❌ local socket | SSH to a remote host |
+| container age | ❌ fresh `up -d` | weeks of uptime |
+
+Every failure in §1–§3 came from the bottom four rows. Added
+`benches/fixtures/hostile-stack.compose.yml` to cover them — a separate file,
+deliberately, so container counts stay stable and `docs/BENCHMARK.md` remains
+reproducible.
+
+| service | covers | assert |
+|---|---|---|
+| `coloured` | ANSI structured logs, 200 INFO + 40 WARN of identical shape | after stripping, ~2 clusters; before, many |
+| `firehose` | 500k lines, ~28MB, json-file with no `max-size` | `tail=400` returns promptly |
+| `longline` | one 65,568-char line | `sample` is truncated |
+| `multiline` | 10 Java stack traces, 70 lines | digest stays readable |
+| `binary` | U+FFFD-dense lines | normalizes and serializes cleanly |
+
+All five verified end-to-end on busybox/OrbStack, then torn down. Two findings
+came out of building it, both worth knowing:
+
+**A literal backslash does not survive YAML folding → compose → `sh`.** A
+`printf '\033[2m'` arrives as the four characters `033[2m`, so a naive ANSI
+fixture silently emits plain text and tests nothing. Both `coloured` and
+`binary` use `awk` `sprintf("%c", N)` instead, which needs no backslash. Verify
+with `docker logs kagoni-hostile-coloured | cat -v | head -1` — expect `^[[2m`.
+
+**A fixture cannot deliver invalid UTF-8 through json-file.** The container
+emits raw `0xff 0xfe 0xfd 0xfc`; `docker logs` returns `ef bf bd` ×4. The
+driver stores entries as JSON, JSON requires valid UTF-8, so the daemon
+sanitizes at write time. That means `String::from_utf8_lossy` in
+`container_logs` is probably unreachable for json-file — worth confirming, and
+worth testing at the unit level in `src/bound/logs.rs` rather than via a
+fixture.
+
+**Not covered by any fixture: transport.** Latency is what turned a slow `tail`
+into a 120-second hang, and no compose file reproduces it. Running
+`benches/run.py` once against `ssh://` to any VM would catch the missing
+deadline in §1.
 
 ## Suggested order of work
 

@@ -13,12 +13,17 @@
 
 use std::collections::HashMap;
 
-/// Cap on the exemplar line kept for each cluster.
+/// Cap on the text kept per cluster, applied to both `sample` and `template`.
 ///
-/// One pathological line — a serialized request body, a stack trace on a single
-/// line — could otherwise dominate a whole digest. The template still shows the
-/// shape, so the tail of a long sample adds little.
-const MAX_SAMPLE_CHARS: usize = 200;
+/// One pathological line — a serialized request body, an HTTP body logged on
+/// error — could otherwise dominate a whole digest. A hostile fixture emitting a
+/// single 64 KB line proved this needs to cover *both* fields: capping only the
+/// sample left a 16 KB template that was 91% of the response.
+///
+/// The template is truncated on the way *out*, never before it is used as the
+/// grouping key — truncating the key would make two different long lines
+/// collide and report as one cluster, which is worse than a large payload.
+const MAX_CLUSTER_TEXT_CHARS: usize = 200;
 
 /// Severity parsed out of the line text itself.
 ///
@@ -471,7 +476,7 @@ pub fn cluster(lines: &[LogLine], max_clusters: usize) -> ClusterSummary {
                     Cluster {
                         // Filled in below, once the final count is known.
                         template: Some(template),
-                        sample: crate::bound::project::clip(&line.text, MAX_SAMPLE_CHARS),
+                        sample: crate::bound::project::clip(&line.text, MAX_CLUSTER_TEXT_CHARS),
                         count: 1,
                         level,
                         first_seen: line.timestamp.clone(),
@@ -497,11 +502,19 @@ pub fn cluster(lines: &[LogLine], max_clusters: usize) -> ClusterSummary {
     let clusters_omitted = distinct_clusters.saturating_sub(max_clusters);
     clusters.truncate(max_clusters);
 
-    // Drop the template from singletons now that counts are final. For a group
-    // of one it is a placeholdered copy of the sample sitting right beside it.
+    // Finalize the templates now that counts are settled and grouping is done.
+    // Both steps must happen here rather than at insertion: the full template is
+    // the HashMap key, and mutating it earlier would change what groups with what.
     for cluster in &mut clusters {
         if cluster.count == 1 {
+            // For a group of one the template is a placeholdered copy of the
+            // sample sitting right beside it.
             cluster.template = None;
+        } else if let Some(template) = &cluster.template {
+            cluster.template = Some(crate::bound::project::clip(
+                template,
+                MAX_CLUSTER_TEXT_CHARS,
+            ));
         }
     }
 
@@ -736,16 +749,49 @@ mod tests {
         assert!(summary.clusters[0].template.is_some());
     }
 
+    /// A hostile fixture emitting one 64 KB line found that capping only the
+    /// sample left a 16 KB *template* — 91% of the response. Both fields have to
+    /// be capped, so this checks both, and checks a grouped cluster rather than
+    /// a singleton, since singletons drop the template anyway and would hide it.
     #[test]
     fn one_enormous_line_cannot_dominate_the_digest() {
-        let huge = format!("payload {}", "x".repeat(10_000));
-        let summary = cluster(&[line(&huge)], 10);
+        let huge = format!("payload {}", "x".repeat(64_000));
+        let summary = cluster(&[line(&huge), line(&huge)], 10);
+        let c = &summary.clusters[0];
+
+        assert_eq!(c.count, 2, "must be a grouped cluster to exercise template");
         assert!(
-            summary.clusters[0].sample.chars().count() < 250,
-            "sample was {} chars",
-            summary.clusters[0].sample.chars().count()
+            c.sample.chars().count() < 250,
+            "sample was {}",
+            c.sample.chars().count()
         );
-        assert!(summary.clusters[0].sample.ends_with("(clipped)"));
+        assert!(c.sample.ends_with("(clipped)"));
+
+        let template = c
+            .template
+            .as_ref()
+            .expect("a grouped cluster keeps its template");
+        assert!(
+            template.chars().count() < 250,
+            "template was {}",
+            template.chars().count()
+        );
+        assert!(template.ends_with("(clipped)"));
+    }
+
+    /// Truncation must happen on the way out, never to the grouping key: two
+    /// different long lines sharing a 200-char prefix must stay separate.
+    #[test]
+    fn capping_the_template_does_not_make_long_lines_collide() {
+        let prefix = "x".repeat(400);
+        let a = format!("{prefix} alpha branch taken");
+        let b = format!("{prefix} bravo branch taken");
+
+        let summary = cluster(&[line(&a), line(&a), line(&b), line(&b)], 10);
+        assert_eq!(
+            summary.distinct_clusters, 2,
+            "lines sharing a long prefix must not be merged by truncation"
+        );
     }
 
     #[test]
@@ -864,6 +910,69 @@ mod tests {
         assert_eq!(
             summary.clusters[0].last_seen.as_deref(),
             Some("2026-08-04T10:05:00Z")
+        );
+    }
+
+    /// A fixture cannot deliver invalid UTF-8 through the json-file driver — the
+    /// daemon sanitizes at write time, because it stores entries as JSON and
+    /// JSON demands valid UTF-8. Raw `0xff 0xfe 0xfd 0xfc` comes back as U+FFFD
+    /// ×4. So the lossy path is exercised here instead, at the level where the
+    /// bytes actually become a string.
+    #[test]
+    fn replacement_characters_normalize_cluster_and_serialize_cleanly() {
+        // What `String::from_utf8_lossy` produces from invalid bytes.
+        let lossy = String::from_utf8_lossy(b"binary follows: \xff\xfe\xfd\xfc done").into_owned();
+        assert!(
+            lossy.contains('\u{fffd}'),
+            "expected replacement chars: {lossy:?}"
+        );
+
+        let lines: Vec<LogLine> = (0..3)
+            .map(|_| LogLine {
+                timestamp: None,
+                text: lossy.clone(),
+                stderr: false,
+            })
+            .collect();
+
+        let summary = cluster(&lines, 10);
+        assert_eq!(
+            summary.distinct_clusters, 1,
+            "identical lossy lines must group"
+        );
+        assert_eq!(summary.clusters[0].count, 3);
+
+        // The whole point: it must survive serialization, since the digest is
+        // handed to the client as JSON.
+        let json = serde_json::to_string(&summary.clusters).expect("must serialize");
+        assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
+    }
+
+    /// Invalid bytes mid-line must not swallow the good lines around them.
+    #[test]
+    fn a_lossy_line_does_not_corrupt_its_neighbours() {
+        let lossy = String::from_utf8_lossy(b"\xff\xfe bad").into_owned();
+        let lines = vec![
+            line("valid line before"),
+            line(&lossy),
+            line("valid line after"),
+        ];
+
+        let summary = cluster(&lines, 10);
+        assert_eq!(summary.distinct_clusters, 3);
+        assert!(
+            summary
+                .clusters
+                .iter()
+                .any(|c| c.sample == "valid line before"),
+            "the preceding good line must survive intact"
+        );
+        assert!(
+            summary
+                .clusters
+                .iter()
+                .any(|c| c.sample == "valid line after"),
+            "the following good line must survive intact"
         );
     }
 
