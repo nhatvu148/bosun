@@ -12,6 +12,6 @@ __pycache__/
 # It was committed twice by accident, both times by `git add -A` sweeping up a
 # local edit that added a real production endpoint. Keeping a tracked file that
 # people are expected to edit locally is the trap; the only reliable fix is for
-# git not to know about it at all. `.mcp.json.example` is the tracked template.
+# git not to know about it at all. The README carries the snippet to copy.
 .mcp.json
 .mcp.local.json

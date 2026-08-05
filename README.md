@@ -103,11 +103,11 @@ With an explicit socket and debug logging:
 
 Then `/mcp` in Claude Code should list kagoni with 18 tools.
 
-> **`.mcp.json` is gitignored and untracked.** Copy `.mcp.json.example` to `.mcp.json`
-> and put real endpoints there. This is deliberate: a tracked file that everyone is
-> expected to edit locally is a trap, and `git add -A` swept a production `ssh://root@…`
-> endpoint into this repo twice before the file was untracked outright. A hostname
-> committed to a public repo cannot be recalled.
+> **`.mcp.json` is gitignored and untracked.** Create your own from the snippet above and
+> put real endpoints in it. This is deliberate: a tracked file that everyone is expected
+> to edit locally is a trap, and `git add -A` swept a production `ssh://root@…` endpoint
+> into this repo twice before the file was untracked outright. A hostname committed to a
+> public repo cannot be recalled.
 
 See [docs/prompts.md](docs/prompts.md) for things to ask it, grouped by what each one
 exercises — including a set for attacking the write-safety gate.
