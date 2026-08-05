@@ -14,4 +14,6 @@ __pycache__/
 # people are expected to edit locally is the trap; the only reliable fix is for
 # git not to know about it at all. The README carries the snippet to copy.
 .mcp.json
+# Belt and braces: an earlier iteration of this advice suggested a separate
+# override file, so anyone following a stale copy of the README is covered too.
 .mcp.local.json
