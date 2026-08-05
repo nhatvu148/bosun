@@ -307,13 +307,22 @@ fn normalize_token(token: &str) -> String {
         return placeholder.to_string();
     }
 
+    // A path is normalized per SEGMENT, not as one blob. Splitting only on the
+    // delimiter set left `/api/reader/texts/binh-ngo-dai-cao` as a single unit,
+    // so `is_long_hex` and friends — which take a bare token — never saw the
+    // parts that were actually identifiers. Two failures followed from that:
+    // a 32-char hash inside a path was shredded into
+    // `<NUM>ff<NUM>b<NUM>ac…` rather than recognized, and slugs grouped
+    // inconsistently depending on whether they happened to contain a digit.
+    let is_path = token.contains('/');
+
     let mut out = String::with_capacity(token.len());
     let mut segment = String::new();
 
     for c in token.chars() {
-        if is_delimiter(c) {
+        if is_delimiter(c) || (is_path && c == '/') {
             if !segment.is_empty() {
-                out.push_str(&normalize_segment(&segment));
+                out.push_str(&normalize_path_part(&segment, is_path));
                 segment.clear();
             }
             out.push(c);
@@ -322,10 +331,60 @@ fn normalize_token(token: &str) -> String {
         }
     }
     if !segment.is_empty() {
-        out.push_str(&normalize_segment(&segment));
+        out.push_str(&normalize_path_part(&segment, is_path));
     }
 
     out
+}
+
+/// Normalize one segment, with extra rules that only apply inside a path.
+///
+/// The path context is what makes the aggressive rules safe. `binh-ngo-dai-cao`
+/// standing alone in a sentence is words; the same string as a path segment is
+/// an identifier. Applying the slug rule everywhere would collapse ordinary
+/// hyphenated prose, so it is deliberately gated on the token containing `/`.
+fn normalize_path_part(segment: &str, is_path: bool) -> String {
+    if !is_path {
+        return normalize_segment(segment);
+    }
+
+    if let Some(placeholder) = classify(segment) {
+        return placeholder.to_string();
+    }
+
+    // `843311ff4b83….png` — the extension stops `is_long_hex` matching, so
+    // split it off and classify the stem. Without this the hash is shredded
+    // into a template that is both unreadable and still unique per hash, which
+    // is the worst of both outcomes.
+    if let Some((stem, ext)) = segment.rsplit_once('.')
+        && !ext.is_empty()
+        && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        && let Some(placeholder) = classify(stem)
+    {
+        return format!("{placeholder}.{ext}");
+    }
+
+    // Multi-word kebab-case in a path is a slug: a resource identifier, not
+    // vocabulary. Requiring two hyphens keeps `not-found` and other ordinary
+    // compounds intact while catching `binh-ngo-dai-cao`. This is what makes
+    // grouping consistent — previously `truyen-kieu-1902` collapsed to
+    // `truyen-kieu-<NUM>` and merged with its sibling, while digit-free slugs
+    // of identical shape each became their own cluster.
+    if is_slug(segment) {
+        return "<SLUG>".to_string();
+    }
+
+    normalize_segment(segment)
+}
+
+/// A lowercase, multi-word, hyphen-joined identifier: `binh-ngo-dai-cao`.
+fn is_slug(s: &str) -> bool {
+    s.matches('-').count() >= 2
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && s.chars().any(|c| c.is_ascii_lowercase())
 }
 
 /// Recognize a whole token (or segment) as a known kind of noise.
@@ -848,6 +907,58 @@ mod tests {
         // token first or it would shatter into three separate numbers.
         assert_eq!(normalize("2026-08-04T10:22:33Z"), "<TS>");
         assert_eq!(normalize("10:22:33.123"), "<TS>");
+    }
+
+    /// A hostile fixture of nginx rate-limit lines produced 12 clusters from
+    /// 260 lines of two shapes. Its diagnosis was exact: `normalize()` saw the
+    /// whole `/api/reader/texts/binh-ngo-dai-cao` token, so the classifiers —
+    /// which take a bare token — never inspected the parts that were actually
+    /// identifiers.
+    #[test]
+    fn identical_request_shapes_group_regardless_of_slug() {
+        // The inconsistency that gave it away: `truyen-kieu-1902` collapsed to
+        // `truyen-kieu-<NUM>` and merged with its sibling, while digit-free
+        // slugs of identical shape each became their own cluster. Whether two
+        // structurally identical lines grouped depended on whether the slug
+        // happened to contain a number.
+        let a = normalize("request: GET /api/reader/texts/binh-ngo-dai-cao HTTP/1.1");
+        let b = normalize("request: GET /api/reader/texts/truyen-kieu-1902 HTTP/1.1");
+        let c = normalize("request: GET /api/reader/texts/nam-quoc-son-ha HTTP/1.1");
+        assert_eq!(
+            a, b,
+            "digit-bearing and digit-free slugs must normalize alike"
+        );
+        assert_eq!(a, c);
+        assert!(a.contains("<SLUG>"), "got: {a}");
+    }
+
+    #[test]
+    fn a_hash_inside_a_path_is_recognized_not_shredded() {
+        // Previously `<NUM>ff<NUM>b<NUM>ac<NUM>…` — unreadable AND still unique
+        // per hash, the worst of both. The extension is what hid it from
+        // `is_long_hex`, which needs a bare token.
+        let a = normalize("GET /api/glyph/843311ff4b837ac2118b201a4ad32e11.png");
+        let b = normalize("GET /api/glyph/b18d04e2b96ce9ac91fce1c4482ed2cd.png");
+        assert_eq!(a, b, "different hashes must share a template");
+        assert!(a.contains("<HEX>.png"), "got: {a}");
+    }
+
+    /// The slug rule is gated on path context and on two hyphens, so ordinary
+    /// hyphenated prose is untouched. Without both guards this would collapse
+    /// real vocabulary and merge genuinely different messages.
+    #[test]
+    fn the_slug_rule_does_not_touch_ordinary_hyphenated_text() {
+        // Outside a path: words, not an identifier.
+        let text = normalize("the read-only-mode flag was rejected");
+        assert!(!text.contains("<SLUG>"), "got: {text}");
+
+        // Inside a path but only one hyphen: indistinguishable from a compound
+        // like `not-found`, so deliberately left alone.
+        let short = normalize("GET /api/not-found");
+        assert!(!short.contains("<SLUG>"), "got: {short}");
+
+        // Different single-word endpoints must stay distinct.
+        assert_ne!(normalize("GET /api/health"), normalize("GET /api/metrics"));
     }
 
     #[test]

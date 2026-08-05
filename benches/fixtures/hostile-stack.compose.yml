@@ -23,9 +23,10 @@
 # nothing here uses `restart: always`, so a forgotten stack cannot grow
 # without bound.
 #
-# All five services were verified end-to-end on busybox:latest / OrbStack.
-# If you change the base image, re-check `coloured` and `binary` — both depend
-# on busybox awk's byte-level sprintf behaviour.
+# All seven services were verified end-to-end on busybox:latest / OrbStack.
+# If you change the base image, re-check `coloured`, `binary`, `webserver` and
+# `needle` — all four depend on busybox awk's byte-level sprintf behaviour for
+# characters that do not survive the YAML -> compose -> sh chain as escapes.
 
 services:
   # ── ANSI-coloured structured logs ────────────────────────────────────────
@@ -182,8 +183,16 @@ services:
   #     `<NUM>ff<NUM>b<NUM>ac<NUM>b<NUM>a<NUM>ad<NUM>e<NUM>.png` — a template
   #     that is both unreadable AND still unique per hash.
   #
-  # Correct behaviour: ~2 clusters (one text-fetch shape, one glyph shape).
-  # Current behaviour: ~13 and rising with the number of distinct paths.
+  # Correct behaviour: 2 clusters (one text-fetch shape, one glyph shape).
+  # MEASURED behaviour, 2026-08-05, 260 lines: **12 clusters**.
+  #
+  # One result in that run is worth more than the count. `truyen-kieu-1902` and
+  # `truyen-kieu-1870` DID merge, into a single cluster of 40 — because both
+  # normalize to `truyen-kieu-<NUM>`. The nine slugs with no digit in them did
+  # not merge with anything. So whether two structurally identical lines group
+  # together depends on whether their slug happens to contain a number, which
+  # is not a property anyone would predict or want.
+  #
   # The signal to watch is distinct_clusters climbing with input variety when
   # the underlying event count has not changed.
   #
@@ -222,13 +231,26 @@ services:
   #
   # Correct behaviour: at the DEFAULT max_clusters=12, the [emerg] cluster
   # (count=1) is present in `clusters`, ranked above the 200-response cluster
-  # (count=10000). If it is missing, severity-first ordering is losing to
+  # (count=4000). If it is missing, severity-first ordering is losing to
   # frequency somewhere, and the tool cannot be trusted for the job people will
   # actually reach for it to do.
+  #
+  # MEASURED 2026-08-05: PASSES. 2 clusters, the [emerg] first at level
+  # "fatal" (count 1), the access log second at "info" (count 4000). This is a
+  # regression guard for behaviour that is already right, not a known defect.
   #
   # Also worth checking: `level="error"` should reduce this to essentially the
   # one line, which is the cheap way to find a needle when you already suspect
   # one exists.
+  #
+  # SIZED 2000/1/2000 ON PURPOSE. An earlier draft used 5000/1/5000, which put
+  # the [emerg] at line 5001 of 10001 — one line outside a MAX_TAIL=5000 window,
+  # so the fixture failed for a reason that had nothing to do with ranking.
+  # That is worth knowing in its own right: a needle older than the tail window
+  # is invisible, and nothing in the response says the window was the reason.
+  # `lines_pulled == tail` is the only hint, and it is easy to read as "there
+  # were exactly that many lines". Test the ranking here; test the window with
+  # `firehose`.
   needle:
     image: busybox:latest
     container_name: kagoni-hostile-needle
@@ -239,10 +261,10 @@ services:
     command: >
       sh -c "awk 'BEGIN{
                q=sprintf(\"%c\",34); d=sprintf(\"%c\",36);
-               for(i=1;i<=5000;i++)
+               for(i=1;i<=2000;i++)
                  print \"10.0.0.\" (i%254) \" - - [05/Aug/2026:14:02:29 +0000] \" q \"GET /health HTTP/1.1\" q \" 200 90\";
                print \"2026/08/05 10:37:43 [emerg] 1#1: limit_req \" q \"api_limit\" q \" uses the \" q d \"binary_remote_addr\" q \" key while previously it used the \" q d \"client_real_ip\" q \" key\";
-               for(i=1;i<=5000;i++)
+               for(i=1;i<=2000;i++)
                  print \"10.0.0.\" (i%254) \" - - [05/Aug/2026:14:02:30 +0000] \" q \"GET /health HTTP/1.1\" q \" 200 90\";
              }';
              sleep 3600"
