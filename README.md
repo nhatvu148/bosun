@@ -1,5 +1,10 @@
 # Kagoni
 
+[![crates.io](https://img.shields.io/crates/v/kagoni.svg)](https://crates.io/crates/kagoni)
+[![docs](https://docs.rs/kagoni/badge.svg)](https://docs.rs/kagoni)
+[![CI](https://github.com/nhatvu148/kagoni/actions/workflows/ci.yml/badge.svg)](https://github.com/nhatvu148/kagoni/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 An **engine-agnostic, agent-ergonomic Docker MCP server** in Rust.
 
 *Kagoni* — from 籠 (*kago*), Japanese for basket, cage or crate. 籠に means "in the
