@@ -31,6 +31,7 @@ COMPOSE_FILE = os.path.join(HERE, "fixtures", "bench-stack.compose.yml")
 PROJECT = "kagoni-bench"
 FLEET = [
     "kagoni-bench-chatty",
+    "kagoni-bench-coloured",
     "kagoni-bench-varied",
     "kagoni-bench-crashloop",
     "kagoni-bench-quiet-1",
@@ -103,6 +104,16 @@ def kagoni_logs_repetitive(names):
     return sum(count(o) for o in out), len(out)
 
 
+def raw_logs_coloured(names):
+    calls = [["docker", "logs", "--tail", "300", "--timestamps", "kagoni-bench-coloured"]]
+    return sum(count(sh(c)) for c in calls), len(calls)
+
+
+def kagoni_logs_coloured(names):
+    out = [kagoni(BINARY, "container_logs", {"id": "kagoni-bench-coloured", "tail": 300})]
+    return sum(count(o) for o in out), len(out)
+
+
 def raw_logs_varied(names):
     calls = [["docker", "logs", "--tail", "200", "--timestamps", "kagoni-bench-varied"]]
     return sum(count(sh(c)) for c in calls), len(calls)
@@ -128,6 +139,7 @@ SCENARIOS = [
     ("Crash-loop triage", "Why is this container failing?", raw_triage, kagoni_triage),
     ("Logs, repetitive", "600 lines, heavy repetition", raw_logs_repetitive, kagoni_logs_repetitive),
     ("Logs, low repetition", "200 structurally distinct lines", raw_logs_varied, kagoni_logs_varied),
+    ("Logs, ANSI-coloured", "300 coloured lines", raw_logs_coloured, kagoni_logs_coloured),
     ("Container listing", "What is running?", raw_list, kagoni_list),
 ]
 

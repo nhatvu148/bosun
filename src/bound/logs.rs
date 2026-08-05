@@ -13,6 +13,13 @@
 
 use std::collections::HashMap;
 
+/// Cap on the exemplar line kept for each cluster.
+///
+/// One pathological line — a serialized request body, a stack trace on a single
+/// line — could otherwise dominate a whole digest. The template still shows the
+/// shape, so the tail of a long sample adds little.
+const MAX_SAMPLE_CHARS: usize = 200;
+
 /// Severity parsed out of the line text itself.
 ///
 /// Container logs have no structured level field — this is a text heuristic and
@@ -102,7 +109,14 @@ pub fn infer_level(line: &str) -> Level {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Cluster {
     /// The normalized skeleton these lines share.
-    pub template: String,
+    ///
+    /// Omitted when `count == 1`: for a singleton the template is a redacted
+    /// duplicate of `sample`, conveying nothing and costing the same. A field
+    /// session had 9 of 12 clusters at `count: 1`, so this is most of the
+    /// payload on exactly the low-repetition logs where the digest is already
+    /// least valuable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
     /// One verbatim line from the group, so the agent sees real values.
     pub sample: String,
     /// How many lines in the scanned window collapsed into this cluster.
@@ -129,18 +143,103 @@ pub struct LogLine {
 
 /// Split a raw log chunk into lines, lifting off the RFC3339 timestamp prefix
 /// that the Engine API prepends when `timestamps=true`.
-pub fn parse_lines(raw: &str, stderr: bool) -> Vec<LogLine> {
+/// `strip_escapes` should be true for anything that will be clustered or
+/// summarized, and false only for `raw=true`, where "raw" means unprocessed and
+/// the caller may specifically be asking whether their app emits escapes.
+pub fn parse_lines(raw: &str, stderr: bool, strip_escapes: bool) -> Vec<LogLine> {
     raw.lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
             let (timestamp, text) = split_timestamp(line);
             LogLine {
                 timestamp,
-                text: text.to_string(),
+                // Strip before anything else sees the line. Escapes reaching
+                // `normalize()` is what broke clustering in the field — see
+                // [`strip_ansi`].
+                text: if strip_escapes {
+                    strip_ansi(text)
+                } else {
+                    text.to_string()
+                },
                 stderr,
             }
         })
         .collect()
+}
+
+/// Remove ANSI escape sequences from a log line.
+///
+/// Any app using coloured structured logging — `tracing`, `zap`, `pino`, most
+/// Rust and Go services — emits these, and until this existed they flowed
+/// straight into clustering with three separate costs:
+///
+/// 1. **Payload.** A raw ESC byte costs six characters (`\u001b`) once
+///    JSON-encoded, and is paid twice — in `template` and in `sample`. Measured
+///    at ~1.2x on a realistic coloured log; worse on densely-coloured lines.
+/// 2. **Unreadable templates.** `normalize()` splits on `[`, so an escape is
+///    torn apart and its digits placeholdered, yielding `[<NUM>m<NUM>-<NUM>…`.
+///    Noise, not a skeleton.
+/// 3. **Grouping, in the mixed-colour case.** The *same* message coloured in one
+///    place and plain in another hashes apart. That happens when a logger
+///    detects a TTY, or when two sources share a stream.
+///
+/// A field report attributed broken clustering more broadly, to level colouring
+/// making "otherwise-identical messages" hash apart. Measurement does not support
+/// that: INFO and WARN lines differ in the level word regardless of colour, and
+/// uniformly-coloured lines group identically with or without stripping. The
+/// tests below record both what stripping does and what it does not.
+///
+/// Hand-rolled rather than pulling a crate, matching [`normalize`] — the grammar
+/// is small and the alternative is a dependency for twenty lines. Handles CSI
+/// (`ESC[…`), the ~99% case in logs, plus OSC (`ESC]…`) which some tools use for
+/// hyperlinks, and bare two-character sequences.
+pub fn strip_ansi(line: &str) -> String {
+    if !line.contains('\x1b') {
+        // Overwhelmingly the common path; don't allocate for it.
+        return line.to_string();
+    }
+
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            // CSI: ESC [ params... final-byte in @-~
+            Some('[') => {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: ESC ] ... terminated by BEL or ST (ESC \)
+            Some(']') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            // Two-character sequences such as ESC c or ESC M.
+            Some(_) => {
+                chars.next();
+            }
+            // Trailing lone ESC — drop it.
+            None => {}
+        }
+    }
+
+    out
 }
 
 /// Detach a leading RFC3339 timestamp, if present.
@@ -370,8 +469,9 @@ pub fn cluster(lines: &[LogLine], max_clusters: usize) -> ClusterSummary {
                 groups.insert(
                     template.clone(),
                     Cluster {
-                        template,
-                        sample: line.text.clone(),
+                        // Filled in below, once the final count is known.
+                        template: Some(template),
+                        sample: crate::bound::project::clip(&line.text, MAX_SAMPLE_CHARS),
                         count: 1,
                         level,
                         first_seen: line.timestamp.clone(),
@@ -397,6 +497,14 @@ pub fn cluster(lines: &[LogLine], max_clusters: usize) -> ClusterSummary {
     let clusters_omitted = distinct_clusters.saturating_sub(max_clusters);
     clusters.truncate(max_clusters);
 
+    // Drop the template from singletons now that counts are final. For a group
+    // of one it is a placeholdered copy of the sample sitting right beside it.
+    for cluster in &mut clusters {
+        if cluster.count == 1 {
+            cluster.template = None;
+        }
+    }
+
     ClusterSummary {
         lines_scanned: lines.len(),
         distinct_clusters,
@@ -415,6 +523,229 @@ mod tests {
             text: text.to_string(),
             stderr: false,
         }
+    }
+
+    /// What ANSI stripping actually buys, measured rather than assumed.
+    ///
+    /// A field report attributed broken clustering to level colouring — the
+    /// claim being that INFO and WARN escapes make identical messages hash
+    /// apart. That is not what happens: those messages differ in the level word
+    /// itself, and identically-coloured lines group fine either way.
+    ///
+    /// The real grouping win is narrower: the *same* message coloured in one
+    /// place and not another, which happens when a logger detects a TTY or when
+    /// two sources share a stream.
+    #[test]
+    fn stripping_groups_a_message_that_is_sometimes_coloured() {
+        let coloured = LogLine {
+            timestamp: None,
+            text: strip_ansi("\x1b[31mconnection refused\x1b[0m"),
+            stderr: false,
+        };
+        let plain = LogLine {
+            timestamp: None,
+            text: strip_ansi("connection refused"),
+            stderr: false,
+        };
+
+        let summary = cluster(&[coloured, plain], 10);
+        assert_eq!(
+            summary.distinct_clusters, 1,
+            "the same message must group whether or not it arrived coloured"
+        );
+    }
+
+    /// Identically-coloured lines already grouped before stripping existed. This
+    /// pins that stripping did not regress the common case.
+    #[test]
+    fn identically_coloured_lines_still_group() {
+        let mk = |pct: &str| LogLine {
+            timestamp: None,
+            text: strip_ansi(&format!("\x1b[33m WARN\x1b[0m disk usage at {pct}%")),
+            stderr: false,
+        };
+        let summary = cluster(&[mk("91"), mk("93")], 10);
+        assert_eq!(summary.distinct_clusters, 1);
+    }
+
+    /// Guards the property a field report said was violated: on a
+    /// high-cardinality, long-line, ANSI-coloured log, the digest came back
+    /// roughly twice the size of the raw lines it was summarizing.
+    ///
+    /// The inversion does not reproduce against the current code — with
+    /// singleton templates dropped and samples capped, the digest stays ~2.5x
+    /// smaller even at worse cardinality than reported (44 groups from 54 lines
+    /// versus their 34). The most plausible original cause is the one now fixed:
+    /// an uncapped `sample` plus a near-duplicate `template`, which on long
+    /// lines cost twice per cluster what the raw line cost once.
+    ///
+    /// Kept as a regression test so that if the digest ever inverts again, it
+    /// fails here rather than in someone's incident.
+    #[test]
+    fn a_digest_never_costs_more_than_the_lines_it_summarizes() {
+        // Match the reported shape: 54 lines yielding ~34 distinct groups, so
+        // most clusters are singletons — the case where the digest is least
+        // able to earn its keep.
+        //
+        // Distinctness has to come from different WORDS. Numbered variants of
+        // one sentence collapse to a single cluster, correctly, because that is
+        // what normalization is for.
+        const VERBS: [&str; 9] = [
+            "loaded",
+            "registered",
+            "compiled",
+            "hydrated",
+            "verified",
+            "reclaimed",
+            "bound",
+            "applied",
+            "scraped",
+        ];
+        const NOUNS: [&str; 9] = [
+            "configuration",
+            "endpoint",
+            "template",
+            "cache",
+            "certificate",
+            "index",
+            "listener",
+            "migration",
+            "exporter",
+        ];
+        let mut raw = Vec::new();
+        for i in 0..54usize {
+            // 20 lines drawn from 10 shapes (each twice), 34 unique after that.
+            let shape = if i < 20 { i / 2 } else { i - 10 };
+            // Long lines, as real structured logs are — key/value context
+            // trailing every message. This is the variable that actually
+            // inverted the digest in the field: `sample` was unbounded and
+            // `template` a near-duplicate, so each cluster cost twice a long
+            // line while raw cost it once.
+            let msg = format!(
+                "{} the {} for subsystem {} \
+                 request_id=abc123 trace_id=def456 span=789 user=someone@example.com \
+                 path=/api/v1/resource/sub method=POST status=200 duration_ms=42",
+                VERBS[shape % VERBS.len()],
+                NOUNS[(shape / VERBS.len()) % NOUNS.len()],
+                (b'a' + (shape / (VERBS.len() * NOUNS.len())) as u8) as char
+            );
+            raw.push(format!(
+                "\x1b[2m2026-08-05T12:47:{:02}.545204Z\x1b[0m \x1b[33m WARN\x1b[0m {msg}",
+                i % 60
+            ));
+        }
+        let raw_bytes: usize = raw.iter().map(|l| l.len()).sum();
+
+        let build = |strip: bool| {
+            let lines: Vec<LogLine> = raw
+                .iter()
+                .map(|t| LogLine {
+                    timestamp: None,
+                    text: if strip { strip_ansi(t) } else { t.clone() },
+                    stderr: false,
+                })
+                .collect();
+            let summary = cluster(&lines, 12);
+            let json = serde_json::to_string(&summary.clusters).unwrap();
+            (summary, json.len())
+        };
+
+        // What the raw lines cost once JSON-encoded, which is how they would
+        // actually reach the agent.
+        let raw_json = serde_json::to_string(&raw).unwrap().len();
+
+        let (kept_summary, kept_bytes) = build(false);
+        let (stripped_summary, stripped_bytes) = build(true);
+
+        // The invariant the field report says was violated: a digest must never
+        // cost more than the lines it summarizes. If this fails, the tool is
+        // inverted and the bounded view has become the expensive one.
+        assert!(
+            stripped_bytes < raw_json,
+            "digest ({stripped_bytes} B) must be smaller than the raw lines it \
+             summarizes ({raw_json} B) — {} distinct clusters from {} lines",
+            stripped_summary.distinct_clusters,
+            raw.len()
+        );
+
+        // Stripping is worth real payload, mostly because a raw ESC byte costs
+        // six characters (`\\u001b`) once JSON-encoded, and is paid in both
+        // `template` and `sample`.
+        assert!(
+            kept_bytes > stripped_bytes,
+            "stripping should shrink the payload: {kept_bytes} -> {stripped_bytes}"
+        );
+
+        // Recorded deliberately: ANSI did NOT change the cluster count here.
+        // The field report attributed broken clustering to colour, and on this
+        // shape that is not the mechanism — grouping is identical either way.
+        // Colour matters for payload size and template readability, and for the
+        // narrower mixed-colour case covered by its own test.
+        assert_eq!(
+            kept_summary.distinct_clusters, stripped_summary.distinct_clusters,
+            "cluster count should not depend on colour for uniformly-coloured logs"
+        );
+
+        let _ = raw_bytes;
+    }
+
+    #[test]
+    fn ansi_escapes_are_removed_without_touching_the_message() {
+        assert_eq!(strip_ansi("\x1b[33m WARN\x1b[0m boom"), " WARN boom");
+        assert_eq!(strip_ansi("\x1b[1;31merror\x1b[0m"), "error");
+        // OSC hyperlink, as some tools emit.
+        assert_eq!(strip_ansi("\x1b]8;;http://x\x07link\x1b]8;;\x07"), "link");
+        // Lines without escapes must pass through untouched and unallocated.
+        assert_eq!(strip_ansi("plain line"), "plain line");
+        // A lone trailing ESC must not panic or leak.
+        assert_eq!(strip_ansi("trailing\x1b"), "trailing");
+    }
+
+    #[test]
+    fn stripping_makes_templates_readable_again() {
+        // Before: normalize() split on '[' inside the escape and placeholdered
+        // its digits, yielding "[<NUM>m<NUM>-<NUM>-<NUM>T..." — noise, not a
+        // skeleton.
+        let raw = "\x1b[2m2026-08-05T12:47:53Z\x1b[0m served request 42";
+        let template = normalize(&strip_ansi(raw));
+        assert!(!template.contains('\x1b'), "escape survived: {template}");
+        assert!(template.contains("served request"), "got: {template}");
+        assert!(
+            !template.contains("<NUM>m"),
+            "escape was placeholdered: {template}"
+        );
+    }
+
+    #[test]
+    fn a_singleton_cluster_omits_its_redundant_template() {
+        let summary = cluster(&[line("a one-off message")], 10);
+        assert_eq!(summary.clusters[0].count, 1);
+        assert!(
+            summary.clusters[0].template.is_none(),
+            "a template for a group of one is a redacted copy of the sample"
+        );
+        // The sample still carries the information.
+        assert_eq!(summary.clusters[0].sample, "a one-off message");
+    }
+
+    #[test]
+    fn a_grouped_cluster_keeps_its_template() {
+        let lines = vec![line("req 1 ok"), line("req 2 ok")];
+        let summary = cluster(&lines, 10);
+        assert_eq!(summary.clusters[0].count, 2);
+        assert!(summary.clusters[0].template.is_some());
+    }
+
+    #[test]
+    fn one_enormous_line_cannot_dominate_the_digest() {
+        let huge = format!("payload {}", "x".repeat(10_000));
+        let summary = cluster(&[line(&huge)], 10);
+        assert!(
+            summary.clusters[0].sample.chars().count() < 250,
+            "sample was {} chars",
+            summary.clusters[0].sample.chars().count()
+        );
+        assert!(summary.clusters[0].sample.ends_with("(clipped)"));
     }
 
     #[test]
@@ -538,7 +869,7 @@ mod tests {
 
     #[test]
     fn rfc3339_prefix_is_lifted_off_the_message() {
-        let parsed = parse_lines("2026-08-04T10:22:33.123456789Z hello world\n", false);
+        let parsed = parse_lines("2026-08-04T10:22:33.123456789Z hello world\n", false, true);
         assert_eq!(parsed.len(), 1);
         assert_eq!(
             parsed[0].timestamp.as_deref(),
@@ -549,7 +880,7 @@ mod tests {
 
     #[test]
     fn lines_without_a_timestamp_keep_their_full_text() {
-        let parsed = parse_lines("hello world\n", true);
+        let parsed = parse_lines("hello world\n", true, true);
         assert_eq!(parsed[0].timestamp, None);
         assert_eq!(parsed[0].text, "hello world");
         assert!(parsed[0].stderr);

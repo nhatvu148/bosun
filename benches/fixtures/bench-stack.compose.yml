@@ -14,6 +14,7 @@
 #   chatty        repetitive logs        -> clustering at its best
 #   varied        low-repetition logs    -> clustering at its worst
 #   crashloop     restarts + exit 1      -> diagnosis signal
+#   coloured      ANSI-escaped output    -> escape stripping and its payload cost
 #   quiet-1..3    almost no logs         -> where Kagoni's JSON costs more
 #                                           than a `docker ps` table row
 
@@ -85,6 +86,22 @@ services:
              echo 'ERROR startup aborted' >&2;
              sleep 1;
              exit 1"
+
+  # Coloured structured logs, which most real services emit and which no
+  # fixture covered until a field report found ANSI escapes flowing straight
+  # into clustering. Escapes cost six characters each once JSON-encoded, and
+  # were paid twice per cluster — in `template` and in `sample`.
+  coloured:
+    image: busybox:latest
+    container_name: kagoni-bench-coloured
+    restart: "no"
+    command: >
+      sh -c "i=0;
+             while [ \$$i -lt 300 ]; do
+               i=\$$((i+1));
+               printf '\033[2m2026-08-05T12:47:%02d.545204Z\033[0m \033[33m WARN\033[0m handler took \$${i}ms\n' \$$((i%60));
+             done;
+             sleep 3600"
 
   quiet-1:
     image: busybox:latest

@@ -1,0 +1,148 @@
+# Hostile fixture stack — environmental edge cases, not content edge cases.
+#
+# bench-stack.compose.yml already varies log *content* rigorously: repetition
+# vs variety, crash signal, quiet containers, and it deliberately avoids
+# rigging the low-repetition case. What it does not vary is everything
+# *around* the content — byte encoding, volume, line length, age.
+#
+# Every one of those bit us in the field (see docs/FIELD-REPORT-2026-08-05.md):
+# ANSI escapes broke clustering, an unrotated multi-day log made `tail` hang,
+# and neither was visible against a fresh local stack of plain `echo` output.
+#
+# DELIBERATELY A SEPARATE FILE. Adding these services to bench-stack would
+# change the container count and invalidate the published numbers in
+# docs/BENCHMARK.md. Run this one on its own:
+#
+#   docker compose -p kagoni-hostile -f benches/fixtures/hostile-stack.compose.yml up -d
+#   # ...exercise container_logs against each service...
+#   docker compose -p kagoni-hostile -f benches/fixtures/hostile-stack.compose.yml down
+#
+# DISK: `firehose` writes 500k lines — measured at ~28MB of log payload
+# (`docker logs kagoni-hostile-firehose | wc -c`), larger on disk once the
+# json-file driver adds its per-line JSON envelope. It stops on its own, and
+# nothing here uses `restart: always`, so a forgotten stack cannot grow
+# without bound.
+#
+# All five services were verified end-to-end on busybox:latest / OrbStack.
+# If you change the base image, re-check `coloured` and `binary` — both depend
+# on busybox awk's byte-level sprintf behaviour.
+
+services:
+  # ── ANSI-coloured structured logs ────────────────────────────────────────
+  # What tracing / zap / logrus / pino actually emit when stdout is a tty, and
+  # what every Rust service using tracing-subscriber emits by default.
+  #
+  # This is a REGRESSION TEST, not just a sample. The INFO and WARN lines are
+  # the same sentence with the same shape — they differ only in the colour
+  # code (32 vs 33). Correct behaviour is for them to collapse to ~2 clusters.
+  #
+  #   without ANSI stripping: many clusters, and templates full of
+  #                           `[<NUM>m<NUM>-<NUM>-<NUM>T...` noise
+  #   with ANSI stripping:    ~2 clusters, readable templates
+  #
+  # If distinct_clusters is anywhere near lines_scanned, the strip is missing.
+  coloured:
+    image: busybox:latest
+    container_name: kagoni-hostile-coloured
+    restart: "no"
+    # ESC is produced with awk's sprintf("%c",27) rather than a printf '\033'
+    # escape. A literal backslash does not survive the YAML-folding ->
+    # compose -> sh chain intact (it arrives as the four characters `033`),
+    # so the colour codes silently degrade to plain text and the fixture
+    # stops testing the thing it exists to test. Verify with:
+    #   docker logs kagoni-hostile-coloured | cat -v | head -1
+    # and expect `^[[2m`, not `033[2m`.
+    # `print` with string concatenation, not printf: a `\n` in a format string
+    # does not survive the YAML/compose/sh chain any more than `\033` does.
+    command: >
+      sh -c "awk 'BEGIN{ e=sprintf(\"%c\",27); d=e \"[2m\"; r=e \"[0m\";
+                         for(i=1;i<=200;i++){
+                           print d \"2026-01-01T00:00:00.000000Z\" r \" \" e \"[32m INFO\" r \" \" d \"app::db\" r d \":\" r \" query id=\" i \" completed in \" i \"ms\";
+                           if(i%5==0)
+                             print d \"2026-01-01T00:00:00.000000Z\" r \" \" e \"[33m WARN\" r \" \" d \"app::db\" r d \":\" r \" query id=\" i \" completed in \" i*100 \"ms\";
+                         } }';
+             sleep 3600"
+
+  # ── Unbounded log volume ─────────────────────────────────────────────────
+  # The erp-postgres shape: json-file with no max-size, no max-file, filled by
+  # something noisy (there, a brute-force attack; here, a loop).
+  #
+  # This does NOT test clustering — the content is trivially repetitive. It
+  # tests whether `tail=N` still returns promptly once the underlying log is
+  # large. In the field, tail=400 against a log of this shape exceeded 120s
+  # over an SSH socket and returned nothing at all.
+  #
+  # awk rather than a shell loop: 500k iterations of busybox sh takes minutes.
+  firehose:
+    image: busybox:latest
+    container_name: kagoni-hostile-firehose
+    restart: "no"
+    logging:
+      driver: json-file
+      # No max-size / max-file, on purpose. This is the misconfiguration we
+      # want to be able to detect and survive, not one to fix in the fixture.
+    command: >
+      sh -c "awk 'BEGIN{ for(i=1;i<=500000;i++)
+                           print \"connection from 10.0.0.\" i%255 \" rejected: authentication failed\" }';
+             sleep 3600"
+
+  # ── Pathological single line ─────────────────────────────────────────────
+  # One 64KB line, the shape you get when a service logs a serialized payload
+  # or a full HTTP body on error. A cluster that picks this as its `sample`
+  # blows the entire response budget on one line.
+  #
+  # Correct behaviour: `sample` is truncated with an ellipsis.
+  longline:
+    image: busybox:latest
+    container_name: kagoni-hostile-longline
+    restart: "no"
+    command: >
+      sh -c "awk 'BEGIN{ s=\"\"; while(length(s)<65536) s=s \"x\";
+                         print \"ERROR upstream rejected payload=\" s }';
+             echo 'normal line after the big one';
+             sleep 3600"
+
+  # ── Multi-line stack traces ──────────────────────────────────────────────
+  # Docker delivers each line separately, so one logical event arrives as ~8
+  # unrelated lines. Indented continuation frames normalize to near-identical
+  # skeletons, which can either cluster usefully or swamp the digest.
+  #
+  # No single right answer here — the point is to see what the digest does to
+  # a stack trace before a user reports it.
+  multiline:
+    image: busybox:latest
+    container_name: kagoni-hostile-multiline
+    restart: "no"
+    command: >
+      sh -c "i=0;
+             while [ \$$i -lt 10 ]; do
+               i=\$$((i+1));
+               echo \"ERROR unhandled exception in request \$$i\" >&2;
+               echo \"  at com.example.service.OrderHandler.process(OrderHandler.java:142)\" >&2;
+               echo \"  at com.example.service.OrderHandler.handle(OrderHandler.java:88)\" >&2;
+               echo \"  at com.example.http.Router.dispatch(Router.java:301)\" >&2;
+               echo \"  at java.base/java.lang.Thread.run(Thread.java:840)\" >&2;
+               echo \"Caused by: java.sql.SQLException: connection pool exhausted\" >&2;
+               echo \"  ... 12 more\" >&2;
+             done;
+             sleep 3600"
+
+  # ── Invalid UTF-8 ────────────────────────────────────────────────────────
+  # Exercises the String::from_utf8_lossy path in container_logs. A container
+  # writing raw bytes (binary protocol debug output, a mojibake'd locale)
+  # should degrade to replacement characters, never panic or truncate the
+  # surrounding good lines.
+  binary:
+    image: busybox:latest
+    container_name: kagoni-hostile-binary
+    restart: "no"
+    # awk sprintf("%c",255) rather than printf '\xff' — same backslash-stripping
+    # trap as `coloured`. busybox awk emits a raw 0xff byte here (verified with
+    # xxd); gawk in a UTF-8 locale would encode U+00FF instead, so keep this on
+    # busybox if you change the base image.
+    command: >
+      sh -c "awk 'BEGIN{ b=sprintf(\"%c%c%c%c\",255,254,253,252);
+                         print \"valid line before\";
+                         print \"binary follows: \" b \" invalid utf8 sequence\";
+                         print \"valid line after\" }';
+             sleep 3600"
